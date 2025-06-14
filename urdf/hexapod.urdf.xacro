@@ -1,0 +1,130 @@
+<?xml version="1.0"?>
+<robot name="hexapod" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!-- Included files. -->
+  <xacro:include filename="xacro_include/joint_control_macro.xacro"/> 
+  <xacro:include filename="xacro_include/leg_macro.xacro"/>
+
+  <!-- World link
+  <link name="world"/> 
+
+   Connect base_link to the world at z = 1
+  <joint name="world_to_base_link" type="fixed">
+    <origin xyz="0 0 1" rpy="0 0 0"/>
+    <parent link="world"/>
+    <child link="base_link"/>
+  </joint> -->
+
+  <!-- Root link -->
+  <link name="base_link"/> 
+
+  <!-- Joint connecting root to base -->
+  <joint name="root_to_base" type="fixed">
+    <origin rpy="0 0 0" xyz="0 0 0"/>
+    <parent link="base_link"/>
+    <child link="base"/>
+  </joint> 
+
+  <!-- Base Link -->
+  <link name="base">
+    <visual>
+      <geometry>
+        <mesh filename="package://hexapod_sim/meshes/base.dae"/>
+      </geometry>
+      <origin xyz="0 0 -0.0145" rpy="${-pi/2} 0 0"/> 
+    </visual>
+    <collision>
+      <geometry><box size="0.18 0.107 0.050"/></geometry>
+      <origin xyz="0 0 0"/>
+    </collision>
+    <inertial>
+      <mass value="0.2"/>
+      <inertia ixx="0.001" ixy="0.0" ixz="0.0" iyy="0.001" iyz="0.0" izz="0.001"/>
+    </inertial>
+  </link>
+
+  <!-- Joint Connecting base to the coxa -->
+  <joint name="jl11" type="revolute">
+    <axis xyz="1 0 0"/>
+    <origin xyz="-0.09 -0.0535 -0.00075" rpy="2.355 ${pi/2} 0"/>
+    <parent link="base"/>
+    <child link="coxal1"/>
+    <limit effort="1000.0" lower="${-pi}" upper="${pi}" velocity="${pi/2}"/>
+    <dynamics damping="0.0" friction="0.0"/>
+  </joint>
+
+  <joint name="jl21" type="revolute">
+    <axis xyz="1 0 0"/>
+    <origin xyz="0 -0.070 -0.00075" rpy="${pi/2} ${pi/2} 0"/>
+    <parent link="base"/>
+    <child link="coxal2"/>
+    <limit effort="1000.0" lower="${-pi}" upper="${pi}" velocity="${pi/2}"/>
+    <dynamics damping="0.0" friction="0.0"/>
+  </joint>
+
+  <joint name="jl31" type="revolute">
+    <axis xyz="1 0 0"/>
+    <origin xyz="0.09 -0.0535 -0.00075" rpy="${pi/4} ${pi/2} 0"/>
+    <parent link="base"/>
+    <child link="coxal3"/>
+    <limit effort="1000.0" lower="${-pi}" upper="${pi}" velocity="${pi/2}"/>
+    <dynamics damping="0.0" friction="0.0"/>
+  </joint>
+
+  <joint name="jl41" type="revolute">
+    <axis xyz="1 0 0"/>
+    <origin xyz="-0.09 0.0535 -0.00075" rpy="-2.355 ${pi/2} 0"/>
+    <parent link="base"/>
+    <child link="coxal4"/>
+    <limit effort="1000.0" lower="${-pi}" upper="${pi}" velocity="${pi/2}"/>
+    <dynamics damping="0.0" friction="0.0"/>
+  </joint>
+
+  <joint name="jl51" type="revolute">
+    <axis xyz="1 0 0"/>
+    <origin xyz="0 0.070 -0.00075" rpy="${-pi/2} ${pi/2} 0"/>
+    <parent link="base"/>
+    <child link="coxal5"/>
+    <limit effort="1000.0" lower="${-pi}" upper="${pi}" velocity="${pi/2}"/>
+    <dynamics damping="0.0" friction="0.0"/>
+  </joint>
+
+  <joint name="jl61" type="revolute">
+    <axis xyz="1 0 0"/>
+    <origin xyz="0.09 0.0535 -0.00075" rpy="${-pi/4} ${pi/2} 0"/>
+    <parent link="base"/>
+    <child link="coxal6"/>
+    <limit effort="1000.0" lower="${-pi}" upper="${pi}" velocity="${pi/2}"/>
+    <dynamics damping="0.0" friction="0.0"/>
+  </joint>
+
+  <!-- Instantiating the leg segments -->
+  <xacro:leg_segment leg_id="l1"/>
+  <xacro:leg_segment leg_id="l2"/>
+  <xacro:leg_segment leg_id="l3"/>
+  <xacro:leg_segment leg_id="l4"/>
+  <xacro:leg_segment leg_id="l5"/>
+  <xacro:leg_segment leg_id="l6"/>
+  
+  <!-- ros2_control global configuration -->
+  <ros2_control name="GazeboSimSystem" type="system">
+    <hardware>
+      <plugin>gz_ros2_control/GazeboSimSystem</plugin>
+    </hardware>
+
+    <!-- ros2_control joint definitions -->
+    <xacro:joint_control leg_id="l1"/>
+    <xacro:joint_control leg_id="l2"/>
+    <xacro:joint_control leg_id="l3"/>
+    <xacro:joint_control leg_id="l4"/>
+    <xacro:joint_control leg_id="l5"/>
+    <xacro:joint_control leg_id="l6"/>
+  </ros2_control>
+
+  <!-- Gazebo plugin for ros2_control -->
+  <gazebo>
+    <plugin filename="gz_ros2_control-system" name="gz_ros2_control::GazeboSimROS2ControlPlugin">
+      <parameters>$(find hexapod_sim)/config/robot_controller.yaml</parameters>
+    </plugin>
+  </gazebo>
+</robot>

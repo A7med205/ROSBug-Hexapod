@@ -1,0 +1,114 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!-- Reusable macro for a leg segment (coxa to tip). -->
+  <xacro:macro name="leg_segment" params="leg_id">
+
+    <!-- Coxa Link -->
+    <link name="coxa${leg_id}">
+      <visual>
+      <geometry>
+        <mesh filename="package://hexapod_sim/meshes/coxa.dae"/>
+      </geometry>
+        <origin xyz="0.02125 0 0" rpy="${-pi/2} ${-pi/2} 0"/>
+      </visual>
+      <collision>
+        <geometry><cylinder radius="0.0135" length="0.0385"/></geometry>
+        <origin xyz="0 0 0.01925"/>
+      </collision>
+      <inertial>
+        <mass value="0.1"/>
+        <inertia ixx="0.001" ixy="0.0" ixz="0.0" iyy="0.001" iyz="0.0" izz="0.001"/>
+      </inertial>
+    </link>
+
+    <!-- Joint between Coxa and Femur (j2 equivalent) -->
+    <joint name="j${leg_id}2" type="revolute">
+      <axis xyz="0 1 0"/>
+      <origin xyz="0 0 0.0385" rpy="0 0 0"/>
+      <parent link="coxa${leg_id}"/>
+      <child link="femur${leg_id}"/>
+      <limit effort="1000.0" lower="${-pi}" upper="${pi}" velocity="${pi/2}"/>
+      <dynamics damping="0.0" friction="0.0"/>
+    </joint>
+
+    <!-- Femur Link -->
+    <link name="femur${leg_id}">
+      <visual>
+      <geometry>
+        <mesh filename="package://hexapod_sim/meshes/femur.dae"/>
+      </geometry>
+        <!-- <origin xyz="0 0.0315 0"/> -->
+        <origin xyz="0 -0.0315 0" rpy="0 0 ${pi}"/>
+      </visual>
+      <collision>
+        <geometry><cylinder radius="0.008" length="0.070"/></geometry>
+        <origin xyz="0 0 0.035"/>
+      </collision>
+      <inertial>
+        <mass value="0.1"/>
+        <inertia ixx="0.001" ixy="0.0" ixz="0.0" iyy="0.001" iyz="0.0" izz="0.001"/>
+      </inertial>
+    </link>
+
+    <!-- Joint between Femur and Tibia (j3 equivalent) -->
+    <joint name="j${leg_id}3" type="revolute">
+      <axis xyz="0 1 0"/>
+      <origin xyz="0 0 0.070" rpy="0 0 0"/>
+      <parent link="femur${leg_id}"/>
+      <child link="tibia${leg_id}"/>
+      <limit effort="1000.0" lower="${-pi}" upper="${pi}" velocity="${pi/2}"/>
+      <dynamics damping="0.0" friction="0.0"/>
+    </joint>
+
+    <!-- Tibia Link -->
+    <link name="tibia${leg_id}">
+      <visual>
+      <geometry>
+        <mesh filename="package://hexapod_sim/meshes/tibia.dae"/>
+      </geometry>
+        <origin xyz="0 -0.02725 0" rpy="${-pi}16 -0.235 0"/>
+      </visual>
+      <collision>
+        <geometry><cylinder radius="0.004" length="0.102"/></geometry>
+        <origin xyz="0 0 0.051"/>
+      </collision>
+      <inertial>
+        <mass value="0.1"/>
+        <inertia ixx="0.001" ixy="0.0" ixz="0.0" iyy="0.001" iyz="0.0" izz="0.001"/>
+      </inertial>
+    </link>
+
+    <!-- Joint between Tibia and Tip (fixed) -->
+    <joint name="j${leg_id}4" type="fixed">
+      <origin xyz="0 0 0.102" rpy="0 0 0"/>
+      <parent link="tibia${leg_id}"/>
+      <child link="tip${leg_id}"/>
+    </joint>
+
+    <!-- Tip Link (colision only) -->
+    <link name="tip${leg_id}">
+      <collision>
+        <geometry><sphere radius="0.004"/></geometry>
+        <origin xyz="0 0 0"/>
+      </collision>
+      <inertial>
+        <mass value="0.01"/>
+        <inertia ixx="0.001" ixy="0.0" ixz="0.0" iyy="0.001" iyz="0.0" izz="0.001"/>
+      </inertial>
+    </link>
+    
+    <!-- Tip link physics -->
+    <gazebo reference="tip${leg_id}">
+      <mu1>1.2</mu1>
+      <mu2>1.2</mu2>
+      <kp>1000000.0</kp>
+      <kd>100.0</kd>
+      <minDepth>0.001</minDepth>
+      <maxVel>0.1</maxVel>
+      <material>Gazebo/Grey</material>
+    </gazebo>
+    
+  </xacro:macro>
+
+</robot>
