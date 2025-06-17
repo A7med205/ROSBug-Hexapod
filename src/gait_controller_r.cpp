@@ -19,7 +19,7 @@ struct LegConfig
 {
     int leg_id;
     std::vector<std::string> joint_names;
-    double angle;     // Direction of coordinate rotation
+    double direction;     // Direction of coordinate rotation
     bool is_tripod_a; // True for tripod A (1,3,5), false for tripod B (2,4,6)
     double H_X;       // Leg position in base X
     double W_Y;       // Leg position in base Y
@@ -95,12 +95,12 @@ private:
     void init_leg_configurations()
     {
         leg_configs_ = {
-            {1, {"jl11", "jl12", "jl13"}, -1.0 * DEG_RAD, true, 0.090, 0.0535}, // Leg 1: 135° CCW, Tripod A
-            {2, {"jl21", "jl22", "jl23"}, 0.0 * DEG_RAD, false, 0.0, 0.070}, // Leg 2: 180°, Tripod B
-            {3, {"jl31", "jl32", "jl33"}, 1.0 * DEG_RAD, true, 0.090, 0.0535},  // Leg 3: 135° CW, Tripod A
-            {4, {"jl41", "jl42", "jl43"}, 1.0 * DEG_RAD, false, 0.090, 0.0535}, // Leg 4: 45° CCW, Tripod B
-            {5, {"jl51", "jl52", "jl53"}, 0.0 * DEG_RAD, true, 0.0, 0.070},  // Leg 5: 0°, Tripod A
-            {6, {"jl61", "jl62", "jl63"}, -1.0 * DEG_RAD, false, 0.090, 0.0535} // Leg 6: 45° CW, Tripod B
+            {1, {"jl11", "jl12", "jl13"}, -1.0, true, 0.090, 0.0535}, // Leg 1: 135° CCW, Tripod A
+            {2, {"jl21", "jl22", "jl23"}, 0.0, false, 0.0, 0.070}, // Leg 2: 180°, Tripod B
+            {3, {"jl31", "jl32", "jl33"}, 1.0, true, 0.090, 0.0535},  // Leg 3: 135° CW, Tripod A
+            {4, {"jl41", "jl42", "jl43"}, 1.0, false, 0.090, 0.0535}, // Leg 4: 45° CCW, Tripod B
+            {5, {"jl51", "jl52", "jl53"}, 0.0, true, 0.0, 0.070},  // Leg 5: 0°, Tripod A
+            {6, {"jl61", "jl62", "jl63"}, -1.0, false, 0.090, 0.0535} // Leg 6: 45° CW, Tripod B
         };
 
         // Build complete joint names vector
@@ -182,7 +182,7 @@ private:
             point.time_from_start = rclcpp::Duration::from_seconds(t);
             point.positions.resize(all_joint_names_.size());
 
-            bool should_add_point = false;
+            bool add_points = false;
 
             for (const auto &leg : leg_configs_)
             {
@@ -206,22 +206,27 @@ private:
                 xyz_t(x_start, x_end, t, duration, is_swing, leg.H_X, leg.W_Y, x_global, y_global, z_global);
 
                 // Rotate coordinates for this leg
-                double x_rotated, y_rotated;
-                RCLCPP_INFO(this->get_logger(), "Leg:%d, X: %.6f, Y: %.6f", leg.leg_id, x_rotated, y_rotated);
-                transform_coordinates(0.0, Y_HOME, x_global, y_global, leg.angle, x_rotated, y_rotated);
+                transform_coordinates(0.0, Y_HOME, leg.H_X, leg.W_Y, leg.direction, x_global, y_global);
+                RCLCPP_INFO(this->get_logger(), "Leg:%d, X: %.6f, Y: %.6f", leg.leg_id, x_global, y_global);
 
                 // Calculate inverse kinematics
                 double j1, j2, j3;
-                IK(LEG_L1, LEG_L2, LEG_L3, x_rotated, y_rotated, z_global, j1, j2, j3);
+                IK(LEG_L1, LEG_L2, LEG_L3, x_global, y_global, z_global, j1, j2, j3);
 
                 // Check if significant change occurred for this leg
-                if (points.empty() ||
-                    std::abs(j1 - last_angles[leg.leg_id][0]) > MIN_ANGLE_CHANGE ||
-                    std::abs(j2 - last_angles[leg.leg_id][1]) > MIN_ANGLE_CHANGE ||
-                    std::abs(j3 - last_angles[leg.leg_id][2]) > MIN_ANGLE_CHANGE)
-                {
-                    should_add_point = true;
+                if (points.empty()) {
+                    add_points = true;
                     last_angles[leg.leg_id] = {j1, j2, j3};
+
+                } else {
+                    std::array<double, 3> new_angles = {j1, j2, j3};
+                
+                    for (int i = 0; i < 3; ++i) {
+                        if (std::abs(new_angles[i] - last_angles[leg.leg_id][i]) > MIN_ANGLE_CHANGE) {
+                            last_angles[leg.leg_id][i] = new_angles[i];
+                            add_points = true;
+                        }
+                    }
                 }
 
                 // Set joint positions in the correct order
@@ -231,7 +236,7 @@ private:
                 point.positions[base_idx + 2] = j3;
             }
 
-            if (should_add_point)
+            if (add_points)
             {
                 points.push_back(point);
             }
@@ -304,26 +309,26 @@ private:
     }
 
     // --- Coordinate Transformation ---
-    void transform_coordinates(double x_c, double y_c, double x_in, double y_in, double direction, double &x_out, double &y_out)
+    void transform_coordinates(double x_c, double y_c, double H_X, double W_Y, double direction, double &X, double &Y)
     {
         // Translate from tip to origin
-        double x_translated = x_in - x_c;
-        double y_translated = y_in - y_c;
+        double x_translated = X - x_c;
+        double y_translated = Y - y_c;
 
         // Remaining base center to tip angle
-        double H = Y_HOME * std::sin(M_PI / 4) + 0.090;
-        double W = Y_HOME * std::cos(M_PI / 4) + 0.0535;
-        double angle = direction * (std::atan2(W, H) - std::atan2(W, H) - M_PI / 4);
+        double H = Y_HOME * std::sin(M_PI / 4) + H_X;
+        double W = Y_HOME * std::cos(M_PI / 4) + W_Y;
+        double angle = direction * std::abs((std::atan2(W, H) - M_PI / 4));
 
         // Rotate around origin
         double cos_a = std::cos(angle);
         double sin_a = std::sin(angle);
-        double x_rotated = x_translated * cos_a - y_translated * sin_a;
-        double y_rotated = x_translated * sin_a + y_translated * cos_a;
+        double x_rotated_ = x_translated * cos_a - y_translated * sin_a;
+        double y_rotated_ = x_translated * sin_a + y_translated * cos_a;
 
         // Translate back to tip
-        x_out = x_rotated + x_c;
-        y_out = y_rotated + y_c;
+        X = x_rotated_ + x_c;
+        Y = y_rotated_ + y_c;
     }
 
     // --- L(t): Path length from time using a 1/3-1/3-1/3 trapezoidal velocity profile ---
