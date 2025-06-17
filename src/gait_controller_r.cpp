@@ -11,17 +11,18 @@
 #include <map>
 
 // Constants
-constexpr double DISCRETIZATION_TIME_STEP = 0.01;       // 10ms update rate
-constexpr double MIN_ANGLE_CHANGE = 1.0 * M_PI / 180.0; // 1 degree in radians
+const double DISCRETIZATION_TIME_STEP = 0.01;       // 10ms update rate
+const double DEG_RAD = M_PI / 180.0;
+const double MIN_ANGLE_CHANGE = 1.0 * M_PI / 180.0; // 1 degree in radians
 
 struct LegConfig
 {
     int leg_id;
     std::vector<std::string> joint_names;
-    int rotation_direction; // Transformation around Z-axis to align rotation radius with base center
-    bool is_tripod_a;       // True for tripod A (1,3,5), false for tripod B (2,4,6)
-    double H_mod;        // Leg position in height
-    double W_mod;        // Leg position in width
+    double angle;     // Direction of coordinate rotation
+    bool is_tripod_a; // True for tripod A (1,3,5), false for tripod B (2,4,6)
+    double H_X;       // Leg position in base X
+    double W_Y;       // Leg position in base Y
 };
 
 class GaitController : public rclcpp::Node
@@ -39,13 +40,13 @@ public:
         this->declare_parameter<int>("total_full_steps", 5);
 
         step_angle_ = this->get_parameter("step_angle").as_double();
-        step_angle_ = step_angle_ * M_PI / 180.0;
+        step_angle_ = step_angle_ * DEG_RAD;
         step_height_ = this->get_parameter("step_height").as_double();
         step_duration_ = this->get_parameter("step_duration").as_double();
         total_full_steps_ = this->get_parameter("total_full_steps").as_int();
 
         RCLCPP_INFO(this->get_logger(), "Gait Parameters:");
-        RCLCPP_INFO(this->get_logger(), " - Step Angle: %.3f m", step_angle_);
+        RCLCPP_INFO(this->get_logger(), " - Step Angle: %.3f rad", step_angle_);
         RCLCPP_INFO(this->get_logger(), " - Step Height: %.3f m", step_height_);
         RCLCPP_INFO(this->get_logger(), " - Step Duration: %.3f s", step_duration_);
         RCLCPP_INFO(this->get_logger(), " - Total Full Steps: %d", total_full_steps_);
@@ -80,10 +81,8 @@ private:
     const double LEG_L1 = 0.0385; // Coxa link
     const double LEG_L2 = 0.0700; // Femur link
     const double LEG_L3 = 0.1020; // Tibia link
-    const double DH = 0.180 / 2;  // Half base length
-    const double DW = 0.180 / 2;  // Half base width
-    const double Z_HOME = -0.040; // Start/End Z, where the pull happens
-    const double Y_HOME = 0.110;  // Constant Y 
+    const double Z_HOME = -0.040; // Home Z
+    const double Y_HOME = 0.110;  // Home Y 
 
     // Leg configurations
     std::vector<LegConfig> leg_configs_;
@@ -96,12 +95,12 @@ private:
     void init_leg_configurations()
     {
         leg_configs_ = {
-            {1, {"jl11", "jl12", "jl13"}, -1, true, 1.0, 1.0}, // Leg 1: 135° CCW, Tripod A
-            {2, {"jl21", "jl22", "jl23"}, 0, false, 0.0, 1.308}, // Leg 2: 180°, Tripod B
-            {3, {"jl31", "jl32", "jl33"}, 1, true, 1.0, 1.0},  // Leg 3: 135° CW, Tripod A
-            {4, {"jl41", "jl42", "jl43"}, 1, false, 1.0, 1.0}, // Leg 4: 45° CCW, Tripod B
-            {5, {"jl51", "jl52", "jl53"}, 0, true, 0.0, 1.308},  // Leg 5: 0°, Tripod A
-            {6, {"jl61", "jl62", "jl63"}, -1, false, 1.0, 1.0} // Leg 6: 45° CW, Tripod B
+            {1, {"jl11", "jl12", "jl13"}, -1.0 * DEG_RAD, true, 0.090, 0.0535}, // Leg 1: 135° CCW, Tripod A
+            {2, {"jl21", "jl22", "jl23"}, 0.0 * DEG_RAD, false, 0.0, 0.070}, // Leg 2: 180°, Tripod B
+            {3, {"jl31", "jl32", "jl33"}, 1.0 * DEG_RAD, true, 0.090, 0.0535},  // Leg 3: 135° CW, Tripod A
+            {4, {"jl41", "jl42", "jl43"}, 1.0 * DEG_RAD, false, 0.090, 0.0535}, // Leg 4: 45° CCW, Tripod B
+            {5, {"jl51", "jl52", "jl53"}, 0.0 * DEG_RAD, true, 0.0, 0.070},  // Leg 5: 0°, Tripod A
+            {6, {"jl61", "jl62", "jl63"}, -1.0 * DEG_RAD, false, 0.090, 0.0535} // Leg 6: 45° CW, Tripod B
         };
 
         // Build complete joint names vector
@@ -204,11 +203,12 @@ private:
                 }
 
                 double x_global, y_global, z_global;
-                compute_leg_position(x_start, x_end, t, duration, is_swing, leg.H_mod, leg.W_mod, x_global, y_global, z_global);
+                xyz_t(x_start, x_end, t, duration, is_swing, leg.H_X, leg.W_Y, x_global, y_global, z_global);
 
                 // Rotate coordinates for this leg
                 double x_rotated, y_rotated;
-                rotate_coordinates(0.0, Y_HOME, x_global, y_global, leg.rotation_direction, x_rotated, y_rotated);
+                RCLCPP_INFO(this->get_logger(), "Leg:%d, X: %.6f, Y: %.6f", leg.leg_id, x_rotated, y_rotated);
+                transform_coordinates(0.0, Y_HOME, x_global, y_global, leg.angle, x_rotated, y_rotated);
 
                 // Calculate inverse kinematics
                 double j1, j2, j3;
@@ -239,15 +239,17 @@ private:
         return points;
     }
 
-    void compute_leg_position(double x_start, double x_end, double t, double duration,
-                              bool is_swing, double H_mod, double W_mod, double &x_global, double &y_global, double &z_global)
+    void xyz_t(double x_start, double x_end, double t, double duration,
+                              bool is_swing, double H_X, double W_Y, double &x_global, double &y_global, double &z_global)
     {
         if (is_swing)
         {
-            // Angle to distance
-            double DH2 = Y_HOME * std::sin(M_PI / 4) + H_mod * DH;
-            double DW2 = Y_HOME * std::cos(M_PI / 4) + W_mod * DW;
-            double R_C = std::sqrt(DH2 * DH2 + DW2 * DW2);  
+            // Rotation radius at tip
+            double H = (H_X != 0.0) ? Y_HOME * std::sin(M_PI / 4) + H_X : 0;
+            double W = (H_X != 0.0) ? Y_HOME * std::cos(M_PI / 4) + W_Y : Y_HOME + W_Y;
+            double R_C = std::sqrt(H * H + W * W);
+            
+            // Angle -> distance
             x_start = x_start * R_C;
             x_end = x_end * R_C;
             
@@ -258,16 +260,17 @@ private:
             double theta = 2.0 * std::asin(C / (2.0 * R));
             double x_center = (x_start + x_end) / 2.0;
             double Lt = R * theta;                                  
-            double L = compute_trapezoidal_pos(t, duration, Lt); 
+            double L = trapezoidal_L_t(t, duration, Lt); 
             
-            // Distance along rotation circle from center
+            // Distance along rotation circle from home position
             double phi = -theta / 2.0 + L / R; // |-| --> |+| 
             double c_dis_local = R * std::sin(phi);
             double c_dis_global = x_center + c_dis_local; 
             
             // Corresponding X and Y 
-            x_global = R_C * std::sin(c_dis_global / R_C);                            
-            y_global = std::abs(R_C * std::cos(c_dis_global / R_C)) - (R_C - Y_HOME); 
+            x_global = R_C * std::sin(c_dis_global / R_C);
+            double P = (H_X != 0.0) ? std::sqrt(H_X * H_X + W_Y * W_Y) * std::cos(atan2(W, H) - atan2(W_Y, H_X)) : W_Y;
+            y_global = R_C * std::cos(c_dis_global / R_C) - std::abs(P);
 
             // Z(X):
             double z_local = std::sqrt(R * R - c_dis_local * c_dis_local) - std::sqrt(R * R - (C / 2.0) * (C / 2.0));
@@ -276,21 +279,24 @@ private:
         else
         {
             // Pull trajectory (no change in Z)
-            // Angle to distance
-            double DH2 = Y_HOME * std::sin(M_PI / 4) + H_mod * DH;
-            double DW2 = Y_HOME * std::cos(M_PI / 4) + W_mod * DW;
-            double R_C = std::sqrt(DH2 * DH2 + DW2 * DW2);  
+            // Rotation radius at tip
+            double H = (H_X != 0.0) ? Y_HOME * std::sin(M_PI / 4) + H_X : 0;
+            double W = (H_X != 0.0) ? Y_HOME * std::cos(M_PI / 4) + W_Y : Y_HOME + W_Y;
+            double R_C = std::sqrt(H * H + W * W);
+            
+            // Angle -> distance
             x_start = x_start * R_C;
             x_end = x_end * R_C;
 
             // Distance from positive end along circle
             double L_total = std::abs(x_end - x_start);
-            double L = compute_trapezoidal_pos(t, duration, L_total);
+            double L = trapezoidal_L_t(t, duration, L_total);
             double c_dis_global = x_start + (x_end - x_start) * (L / L_total); // |start| --> |end| 
 
             // Corresponding X and Y 
             x_global = R_C * std::sin(c_dis_global / R_C);                           
-            y_global = std::abs(R_C * std::cos(c_dis_global / R_C)) - (R_C - Y_HOME);
+            double P = (H_X != 0.0) ? std::sqrt(H_X * H_X + W_Y * W_Y) * std::cos(atan2(W, H) - atan2(W_Y, H_X)) : W_Y;
+            y_global = R_C * std::cos(c_dis_global / R_C) - std::abs(P);
             
             // Constant Z
             z_global = Z_HOME;                                                      
@@ -298,16 +304,16 @@ private:
     }
 
     // --- Coordinate Transformation ---
-    void rotate_coordinates(double x_c, double y_c, double x_in, double y_in, double direction, double &x_out, double &y_out)
+    void transform_coordinates(double x_c, double y_c, double x_in, double y_in, double direction, double &x_out, double &y_out)
     {
         // Translate from tip to origin
         double x_translated = x_in - x_c;
         double y_translated = y_in - y_c;
 
         // Remaining base center to tip angle
-        double DH2 = Y_HOME * std::sin(M_PI / 4) + DH;
-        double DW2 = Y_HOME * std::cos(M_PI / 4) + DW;
-        double angle = direction * (std::atan2(DH2, DW2) - M_PI / 4);
+        double H = Y_HOME * std::sin(M_PI / 4) + 0.090;
+        double W = Y_HOME * std::cos(M_PI / 4) + 0.0535;
+        double angle = direction * (std::atan2(W, H) - std::atan2(W, H) - M_PI / 4);
 
         // Rotate around origin
         double cos_a = std::cos(angle);
@@ -321,7 +327,7 @@ private:
     }
 
     // --- L(t): Path length from time using a 1/3-1/3-1/3 trapezoidal velocity profile ---
-    double compute_trapezoidal_pos(double t, double T, double L_total)
+    double trapezoidal_L_t(double t, double T, double L_total)
     {
         if (T <= 0)
             return (t > 0) ? L_total : 0.0;
