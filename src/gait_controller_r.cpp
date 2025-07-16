@@ -95,12 +95,12 @@ private:
     void init_leg_configurations()
     {
         leg_configs_ = {
-            {1, {"jl11", "jl12", "jl13"}, -1.0, true, 0.090, 0.0535}, // Leg 1: 135° CCW, Tripod A
+            {1, {"jl11", "jl12", "jl13"}, 1.0, true, 0.090, 0.0535}, // Leg 1: 135° CCW, Tripod A
             {2, {"jl21", "jl22", "jl23"}, 0.0, false, 0.0, 0.070}, // Leg 2: 180°, Tripod B
-            {3, {"jl31", "jl32", "jl33"}, 1.0, true, 0.090, 0.0535},  // Leg 3: 135° CW, Tripod A
-            {4, {"jl41", "jl42", "jl43"}, 1.0, false, 0.090, 0.0535}, // Leg 4: 45° CCW, Tripod B
+            {3, {"jl31", "jl32", "jl33"}, -1.0, true, 0.090, 0.0535},  // Leg 3: 135° CW, Tripod A
+            {4, {"jl41", "jl42", "jl43"}, -1.0, false, 0.090, 0.0535}, // Leg 4: 45° CCW, Tripod B
             {5, {"jl51", "jl52", "jl53"}, 0.0, true, 0.0, 0.070},  // Leg 5: 0°, Tripod A
-            {6, {"jl61", "jl62", "jl63"}, -1.0, false, 0.090, 0.0535} // Leg 6: 45° CW, Tripod B
+            {6, {"jl61", "jl62", "jl63"}, 1.0, false, 0.090, 0.0535} // Leg 6: 45° CW, Tripod B
         };
 
         // Build complete joint names vector
@@ -207,7 +207,6 @@ private:
 
                 // Rotate coordinates for this leg
                 transform_coordinates(0.0, Y_HOME, leg.H_X, leg.W_Y, leg.direction, x_global, y_global);
-                RCLCPP_INFO(this->get_logger(), "Leg:%d, X: %.6f, Y: %.6f", leg.leg_id, x_global, y_global);
 
                 // Calculate inverse kinematics
                 double j1, j2, j3;

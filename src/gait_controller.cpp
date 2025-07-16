@@ -204,13 +204,19 @@ private:
                 IK(LEG_L1, LEG_L2, LEG_L3, x_rotated, y_rotated, z_global, j1, j2, j3);
 
                 // Check if significant change occurred for this leg
-                if (points.empty() || 
-                    std::abs(j1 - last_angles[leg.leg_id][0]) > MIN_ANGLE_CHANGE ||
-                    std::abs(j2 - last_angles[leg.leg_id][1]) > MIN_ANGLE_CHANGE ||
-                    std::abs(j3 - last_angles[leg.leg_id][2]) > MIN_ANGLE_CHANGE)
-                {
-                    should_add_point = true;
+                if (points.empty()) {
+                    add_points = true;
                     last_angles[leg.leg_id] = {j1, j2, j3};
+
+                } else {
+                    std::array<double, 3> new_angles = {j1, j2, j3};
+                
+                    for (int i = 0; i < 3; ++i) {
+                        if (std::abs(new_angles[i] - last_angles[leg.leg_id][i]) > MIN_ANGLE_CHANGE) {
+                            last_angles[leg.leg_id][i] = new_angles[i];
+                            add_points = true;
+                        }
+                    }
                 }
 
                 // Set joint positions in the correct order
