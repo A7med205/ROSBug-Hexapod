@@ -77,8 +77,8 @@ private:
     const double LEG_L1 = 0.0385; // Coxa link
     const double LEG_L2 = 0.0700; // Femur link
     const double LEG_L3 = 0.1020; // Tibia link
-    const double Z_HOME = -0.040; // Start/End Z, where the pull happens
-    const double Y_HOME = 0.110; // Constant Y
+    const double Z_HOME = -0.050; // Start/End Z, where the pull happens
+    const double Y_HOME = 0.100; // Constant Y
 
     // Leg configurations
     std::vector<LegConfig> leg_configs_;
@@ -175,7 +175,7 @@ private:
             point.time_from_start = rclcpp::Duration::from_seconds(t);
             point.positions.resize(all_joint_names_.size());
             
-            bool should_add_point = false;
+            bool add_points = false;
 
             for (const auto& leg : leg_configs_)
             {
@@ -226,7 +226,7 @@ private:
                 point.positions[base_idx + 2] = j3;
             }
 
-            if (should_add_point) {
+            if (add_points) {
                 points.push_back(point);
             }
         }

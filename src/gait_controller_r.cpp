@@ -81,8 +81,8 @@ private:
     const double LEG_L1 = 0.0385; // Coxa link
     const double LEG_L2 = 0.0700; // Femur link
     const double LEG_L3 = 0.1020; // Tibia link
-    const double Z_HOME = -0.040; // Home Z
-    const double Y_HOME = 0.110;  // Home Y 
+    const double Z_HOME = -0.050; // Home Z
+    const double Y_HOME = 0.100;  // Home Y 
 
     // Leg configurations
     std::vector<LegConfig> leg_configs_;
