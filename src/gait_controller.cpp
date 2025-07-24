@@ -78,7 +78,7 @@ private:
     const double LEG_L2 = 0.0700; // Femur link
     const double LEG_L3 = 0.1020; // Tibia link
     const double Z_HOME = -0.050; // Start/End Z, where the pull happens
-    const double Y_HOME = 0.100; // Constant Y
+    const double Y_HOME = 0.110; // Constant Y
 
     // Leg configurations
     std::vector<LegConfig> leg_configs_;
@@ -321,7 +321,7 @@ private:
         J1 = std::atan2(Y, X) - M_PI / 2; 
         
         // Solving for J2/J3 in the 2D plane defined by the leg links
-        double x_prime = std::sqrt(X*X + (Y- L1)*(Y- L1)) ; // Horizontal distance from J2 axis
+        double x_prime = std::sqrt(X*X + Y*Y) - L1 ; // Horizontal distance from J2 axis
         double D = std::sqrt(x_prime*x_prime + Z*Z); // Straight line distance from J2 axis to tip
         
         if (D > (L2 + L3) || D < std::abs(L2-L3)) {
