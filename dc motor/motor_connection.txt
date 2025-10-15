@@ -1,0 +1,18 @@
+POS of Power Source → +12V on L298N 
+GND of Power Source → GND on L298N
+
+(5V-EN jumper disconnected)
+
+5V of Raspberry Pi → +5V on L298N
+GND on L298N to GND on Raspberry Pi
+
+(RPi powers the logic)
+
+Power Source → buck convertor 
+buck convertor →5V→ RPi USB-C
+
+IN1 → (GPIO17 / Pin 11)
+IN2 → (GPIO27 / Pin 13)
+ENA → PWM (GPIO18 / Pin 12)
+
+Motor → OUT1 and OUT2 on L298N

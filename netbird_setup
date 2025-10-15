@@ -1,0 +1,9 @@
+curl -fsSL https://pkgs.netbird.io/install.sh | sudo bash
+netbird up --setup-key A7CF3A19-7B77-4EEB-B4AF-DDE91D2696D0
+
+PC:
+-------------------------------
+sudo apt update
+sudo apt install openssh-server
+sudo systemctl enable ssh
+sudo systemctl start ssh
