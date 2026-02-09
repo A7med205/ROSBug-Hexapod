@@ -78,7 +78,8 @@ private:
     const double LEG_L2 = 0.0700; // Femur link
     const double LEG_L3 = 0.1020; // Tibia link
     const double Z_HOME = -0.050; // Start/End Z, where the pull happens
-    const double Y_HOME = 0.110; // Constant Y
+    const double X_HOME = 0.110; // Constant X
+    const double Y_HOME = 0.0; // Constant Y
 
     // Leg configurations
     std::vector<LegConfig> leg_configs_;
@@ -91,12 +92,12 @@ private:
     void init_leg_configurations()
     {
         leg_configs_ = {
-            {1, {"jl11", "jl12", "jl13"}, 135.0 * DEG_TO_RAD, true},  // Leg 1: 135° CCW, Tripod A
+            {1, {"jl11", "jl12", "jl13"}, -135.0 * DEG_TO_RAD, true},  // Leg 1: 135° CW, Tripod A
             {2, {"jl21", "jl22", "jl23"}, 180.0 * DEG_TO_RAD, false}, // Leg 2: 180°, Tripod B
-            {3, {"jl31", "jl32", "jl33"}, -135.0 * DEG_TO_RAD, true}, // Leg 3: 135° CW, Tripod A
-            {4, {"jl41", "jl42", "jl43"}, 45.0 * DEG_TO_RAD, false},  // Leg 4: 45° CCW, Tripod B
+            {3, {"jl31", "jl32", "jl33"}, 135.0 * DEG_TO_RAD, true}, // Leg 3: 135° CCW, Tripod A
+            {4, {"jl41", "jl42", "jl43"}, -45.0 * DEG_TO_RAD, false},  // Leg 4: 45° CW, Tripod B
             {5, {"jl51", "jl52", "jl53"}, 0.0 * DEG_TO_RAD, true},    // Leg 5: 0°, Tripod A
-            {6, {"jl61", "jl62", "jl63"}, -45.0 * DEG_TO_RAD, false}  // Leg 6: 45° CW, Tripod B
+            {6, {"jl61", "jl62", "jl63"}, 45.0 * DEG_TO_RAD, false}  // Leg 6: 45° CCW, Tripod B
         };
 
         // Build complete joint names vector
@@ -110,17 +111,17 @@ private:
     // --- Core Hexapod Gait Logic ---
     void run_hexapod_gait_sequence()
     {
-        const double x_home = 0.0;
-        const double x_forward = x_home + step_length_ / 2.0;
-        const double x_backward = x_home - step_length_ / 2.0;
+        
+        const double y_forward = Y_HOME + step_length_ / 2.0;
+        const double y_backward = Y_HOME - step_length_ / 2.0;
 
         int step_counter = 0;
 
         // 1. Initial half-step: Tripod A swings forward, Tripod B pulls backward
         RCLCPP_INFO(this->get_logger(), "Executing initial half-step...");
         auto initial_points = generate_coordinated_trajectory(
-            x_home, x_forward,  // Tripod A: swing from home to forward
-            x_home, x_backward,  // Tripod B: pull from forward to home
+            Y_HOME, y_forward,  // Tripod A: swing from home to forward
+            Y_HOME, y_backward,  // Tripod B: pull from forward to home
             0.75 * step_duration_, true, false);
         send_and_wait(initial_points);
 
@@ -132,15 +133,15 @@ private:
             
             // Phase 1: Tripod A pulls backward, Tripod B swings forward
             auto phase1_points = generate_coordinated_trajectory(
-                x_forward, x_backward,  // Tripod A: pull from forward to backward
-                x_backward, x_forward,      // Tripod B: swing from home to forward
+                y_forward, y_backward,  // Tripod A: pull from forward to backward
+                y_backward, y_forward,      // Tripod B: swing from home to forward
                 step_duration_, false, true);
             send_and_wait(phase1_points);
             
             // Phase 2: Tripod A swings forward, Tripod B pulls backward
             auto phase2_points = generate_coordinated_trajectory(
-                x_backward, x_forward,  // Tripod A: swing from backward to forward
-                x_forward, x_backward,  // Tripod B: pull from forward to backward
+                y_backward, y_forward,  // Tripod A: swing from backward to forward
+                y_forward, y_backward,  // Tripod B: pull from forward to backward
                 step_duration_, true, false);
             send_and_wait(phase2_points);
         }
@@ -149,16 +150,16 @@ private:
         // 3. Final half-step: Tripod A pulls to home, Tripod B swings to home
         RCLCPP_INFO(this->get_logger(), "Executing final half-step to home...");
         auto final_points = generate_coordinated_trajectory(
-            x_forward, x_home,      // Tripod A: pull from forward to home
-            x_backward, x_home,     // Tripod B: swing from backward to home
+            y_forward, Y_HOME,      // Tripod A: pull from forward to home
+            y_backward, Y_HOME,     // Tripod B: swing from backward to home
             0.75 * step_duration_, false, true);
         send_and_wait(final_points);
     }
 
     // --- Coordinated Trajectory Generation ---
     std::vector<trajectory_msgs::msg::JointTrajectoryPoint> generate_coordinated_trajectory(
-        double tripod_a_x_start, double tripod_a_x_end,
-        double tripod_b_x_start, double tripod_b_x_end,
+        double tripod_a_y_start, double tripod_a_y_end,
+        double tripod_b_y_start, double tripod_b_y_end,
         double duration, bool tripod_a_swing, bool tripod_b_swing)
     {
         std::vector<trajectory_msgs::msg::JointTrajectoryPoint> points;
@@ -179,29 +180,29 @@ private:
 
             for (const auto& leg : leg_configs_)
             {
-                double x_start, x_end;
+                double y_start, y_end;
                 bool is_swing;
 
                 if (leg.is_tripod_a) {
-                    x_start = tripod_a_x_start;
-                    x_end = tripod_a_x_end;
+                    y_start = tripod_a_y_start;
+                    y_end = tripod_a_y_end;
                     is_swing = tripod_a_swing;
                 } else {
-                    x_start = tripod_b_x_start;
-                    x_end = tripod_b_x_end;
+                    y_start = tripod_b_y_start;
+                    y_end = tripod_b_y_end;
                     is_swing = tripod_b_swing;
                 }
 
-                double x_global, z_global;
-                compute_leg_position(x_start, x_end, t, duration, is_swing, x_global, z_global);
+                double y_global, z_global;
+                compute_leg_position(y_start, y_end, t, duration, is_swing, y_global, z_global);
 
                 // Rotate coordinates for this leg
-                double x_rotated, y_rotated;
-                rotate_coordinates(0.0, Y_HOME, x_global, Y_HOME, leg.rotation_angle, x_rotated, y_rotated);
+                double y_rotated, x_rotated;
+                rotate_coordinates(Y_HOME, X_HOME, y_global, X_HOME, leg.rotation_angle, y_rotated, x_rotated);
 
                 // Calculate inverse kinematics
                 double j1, j2, j3;
-                IK(LEG_L1, LEG_L2, LEG_L3, x_rotated, y_rotated, z_global, j1, j2, j3);
+                IK(LEG_L1, LEG_L2, LEG_L3, y_rotated, x_rotated, z_global, j1, j2, j3);
 
                 // Check if significant change occurred for this leg
                 if (points.empty()) {
@@ -233,18 +234,18 @@ private:
         return points;
     }
 
-    void compute_leg_position(double x_start, double x_end, double t, double duration, 
-                             bool is_swing, double& x_global, double& z_global)
+    void compute_leg_position(double y_start, double y_end, double t, double duration, 
+                             bool is_swing, double& y_global, double& z_global)
     {
         if (is_swing) {
             // Swing trajectory with arc
-            double C = std::abs(x_end - x_start); // Chord length
+            double C = std::abs(y_end - y_start); // Chord length
             double h = step_height_; // Arc height
 
             if (C < 1e-6 || h < 1e-6) { // Straight line if no length or height
-                double L_total = std::abs(x_end - x_start);
+                double L_total = std::abs(y_end - y_start);
                 double L = compute_trapezoidal_pos(t, duration, L_total);
-                x_global = x_start + (x_end - x_start) * (L / L_total);
+                y_global = y_start + (y_end - y_start) * (L / L_total);
                 z_global = Z_HOME;
                 return;
             }
@@ -253,28 +254,28 @@ private:
             double theta = 2.0 * std::asin(C / (2.0 * R)); // Total central angle
             double Lt = R * theta; // Total arc length
             
-            double x_center = (x_start + x_end) / 2.0;
+            double y_center = (y_start + y_end) / 2.0;
             
             double L = compute_trapezoidal_pos(t, duration, Lt); // Arc length from negative end
-            double phi = -theta / 2.0 + L / R; // =/- Angle to local_x
-            double x_local = R * std::sin(phi); // X distance from step center
+            double phi = -theta / 2.0 + L / R; // =/- Angle to local_y
+            double y_local = R * std::sin(phi); // y distance from step center
 
-            // Z(X): Vertical coordinate from horizontal coordinate X
-            double z_local = std::sqrt(R * R - x_local * x_local) - std::sqrt(R * R - (C/2.0)*(C/2.0));
+            // Z(y): Vertical coordinate from horizontal coordinate y
+            double z_local = std::sqrt(R * R - y_local * y_local) - std::sqrt(R * R - (C/2.0)*(C/2.0));
             
-            x_global = x_center + x_local; // True X
+            y_global = y_center + y_local; // True y
             z_global = Z_HOME + z_local; // Corresponding Z
         } else {
             // Pull trajectory (straight line)
-            double L_total = std::abs(x_end - x_start);
+            double L_total = std::abs(y_end - y_start);
             double L = compute_trapezoidal_pos(t, duration, L_total); // Length from positive end
-            x_global = x_start + (x_end - x_start) * (L / L_total); // True X
+            y_global = y_start + (y_end - y_start) * (L / L_total); // True y
             z_global = Z_HOME; // Corresponding Z
         }
     }
 
     // --- Coordinate Transformation ---
-    void rotate_coordinates(double x_c, double y_c, double x_in, double y_in, double angle, double& x_out, double& y_out)
+    void rotate_coordinates(double y_c, double x_c, double y_in, double x_in, double angle, double& y_out, double& x_out)
     {
         // Translate point to origin
         double x_translated = x_in - x_c;
@@ -314,11 +315,11 @@ private:
     }
 
     // --- IK: Calculates joint angles from tip position ---
-    void IK(double L1, double L2, double L3, double X, double Y, double Z, 
+    void IK(double L1, double L2, double L3, double Y, double X, double Z, 
             double &J1, double &J2, double &J3)
     {
         // Base joint angle
-        J1 = std::atan2(Y, X) - M_PI / 2; 
+        J1 = -std::atan2(Y, X); 
         
         // Solving for J2/J3 in the 2D plane defined by the leg links
         double x_prime = std::sqrt(X*X + Y*Y) - L1 ; // Horizontal distance from J2 axis
