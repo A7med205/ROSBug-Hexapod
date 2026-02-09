@@ -67,7 +67,7 @@
       <geometry>
         <mesh filename="package://hexapod_sim/meshes/tibia.dae"/>
       </geometry>
-        <origin xyz="0 -0.02725 0" rpy="${-pi}16 -0.235 0"/>
+        <origin xyz="0 -0.02725 0" rpy="${pi} -0.235 0"/>
       </visual>
       <collision>
         <geometry><cylinder radius="0.004" length="0.102"/></geometry>
