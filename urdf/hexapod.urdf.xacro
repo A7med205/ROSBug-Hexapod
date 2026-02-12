@@ -46,7 +46,7 @@
   <!-- Joint Connecting base to the coxa -->
   <joint name="jl11" type="revolute">
     <axis xyz="1 0 0"/>
-    <origin xyz="-0.09 -0.0535 -0.00075" rpy="2.355 ${pi/2} 0"/>
+    <origin xyz="-0.09 -0.0535 -0.00075" rpy="${3*pi/4} ${pi/2} 0"/>
     <parent link="base"/>
     <child link="coxal1"/>
     <limit effort="1000.0" lower="${-pi}" upper="${pi}" velocity="${pi/2}"/>
@@ -73,7 +73,7 @@
 
   <joint name="jl41" type="revolute">
     <axis xyz="1 0 0"/>
-    <origin xyz="-0.09 0.0535 -0.00075" rpy="-2.355 ${pi/2} 0"/>
+    <origin xyz="-0.09 0.0535 -0.00075" rpy="-${3*pi/4} ${pi/2} 0"/>
     <parent link="base"/>
     <child link="coxal4"/>
     <limit effort="1000.0" lower="${-pi}" upper="${pi}" velocity="${pi/2}"/>
