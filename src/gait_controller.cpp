@@ -1,410 +1,292 @@
-#include <rclcpp/rclcpp.hpp>
-#include <rclcpp_action/rclcpp_action.hpp>
-#include <control_msgs/action/follow_joint_trajectory.hpp>
-#include <trajectory_msgs/msg/joint_trajectory_point.hpp>
-
+#include <algorithm>
+#include <array>
+#include <chrono>
 #include <cmath>
+#include <cstdint>
+#include <limits>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
-#include <chrono>
-#include <map>
 
-// Constants
-constexpr double DEG_TO_RAD = M_PI / 180.0;
-constexpr double DISCRETIZATION_TIME_STEP = 0.01; // 10ms update rate
-constexpr double MIN_ANGLE_CHANGE = 1.0 * DEG_TO_RAD; // 1 degree in radians
-
-struct LegConfig {
-    int leg_id;
-    std::vector<std::string> joint_names;
-    double rotation_angle; // Rotation around Z-axis relative to leg 5
-    bool is_tripod_a; // true for tripod A (1,3,5), false for tripod B (2,4,6)
-};
+#include <control_msgs/action/follow_joint_trajectory.hpp>
+#include <rclcpp/rclcpp.hpp>
+#include <rclcpp_action/rclcpp_action.hpp>
+#include <trajectory_msgs/msg/joint_trajectory.hpp>
+#include <trajectory_msgs/msg/joint_trajectory_point.hpp>
 
 class GaitController : public rclcpp::Node
 {
 public:
-    GaitController() : Node("gait_controller_node")
-    {
-        // 1. Initialize leg configurations
-        init_leg_configurations();
-        
-        // 2. Declare and get parameters
-        this->declare_parameter<double>("step_length", 0.05);
-        this->declare_parameter<double>("step_height", 0.03);
-        this->declare_parameter<double>("step_duration", 1.5);
-        this->declare_parameter<int>("total_full_steps", 5);
+  using FollowJointTrajectory = control_msgs::action::FollowJointTrajectory;
+  using GoalHandleFJT = rclcpp_action::ClientGoalHandle<FollowJointTrajectory>;
 
-        step_length_ = this->get_parameter("step_length").as_double();
-        step_height_ = this->get_parameter("step_height").as_double();
-        step_duration_ = this->get_parameter("step_duration").as_double();
-        total_full_steps_ = this->get_parameter("total_full_steps").as_int();
-
-        RCLCPP_INFO(this->get_logger(), "Gait Parameters:");
-        RCLCPP_INFO(this->get_logger(), " - Step Length: %.3f m", step_length_);
-        RCLCPP_INFO(this->get_logger(), " - Step Height: %.3f m", step_height_);
-        RCLCPP_INFO(this->get_logger(), " - Step Duration: %.3f s", step_duration_);
-        RCLCPP_INFO(this->get_logger(), " - Total Full Steps: %d", total_full_steps_);
-
-        // 3. Create Action Client
-        action_client_ = rclcpp_action::create_client<control_msgs::action::FollowJointTrajectory>(
-            this, "/joint_trajectory_controller/follow_joint_trajectory");
-
-        RCLCPP_INFO(this->get_logger(), "Waiting for action server...");
-        if (!action_client_->wait_for_action_server(std::chrono::seconds(10)))
-        {
-            RCLCPP_ERROR(this->get_logger(), "Action server not available after waiting");
-            rclcpp::shutdown();
-            return;
-        }
-
-        // 4. Run the main gait sequence
-        run_hexapod_gait_sequence();
-
-        RCLCPP_INFO(this->get_logger(), "Hexapod gait sequence completed. Shutting down.");
-        rclcpp::shutdown();
-    }
+  struct TipPosition
+  {
+    double x;
+    double y;
+    double z;
+  };
 
 private:
-    // ROS Parameters
-    double step_length_;
-    double step_height_;
-    double step_duration_;
-    int total_full_steps_;
+  struct LegFramePose
+  {
+    double x;
+    double y;
+    double theta;
+  };
 
-    // Robot Constants
-    const double LEG_L1 = 0.0385; // Coxa link
-    const double LEG_L2 = 0.0700; // Femur link
-    const double LEG_L3 = 0.1020; // Tibia link
-    const double Z_HOME = -0.050; // Start/End Z, where the pull happens
-    const double X_HOME = 0.110; // Constant X
-    const double Y_HOME = 0.0; // Constant Y
+  struct Leg
+  {
+    int leg_id;
+    std::array<std::string, 3> joint_names;
+    LegFramePose frame_pose;
+    TipPosition current_tip_position;
+    std::array<double, 3> current_joint_angles;
+  };
 
-    // Leg configurations
-    std::vector<LegConfig> leg_configs_;
-    std::vector<std::string> all_joint_names_;
+public:
+  GaitController()
+  : Node("gait_controller")
+  {
+    action_name_ = this->declare_parameter<std::string>(
+      "action_name", "/joint_trajectory_controller/follow_joint_trajectory");
 
-    // ROS Action Client
-    rclcpp_action::Client<control_msgs::action::FollowJointTrajectory>::SharedPtr action_client_;
+    legs_ = create_legs();
 
-    // --- Initialization ---
-    void init_leg_configurations()
-    {
-        leg_configs_ = {
-            {1, {"jl11", "jl12", "jl13"}, -135.0 * DEG_TO_RAD, true},  // Leg 1: 135° CW, Tripod A
-            {2, {"jl21", "jl22", "jl23"}, 180.0 * DEG_TO_RAD, false}, // Leg 2: 180°, Tripod B
-            {3, {"jl31", "jl32", "jl33"}, 135.0 * DEG_TO_RAD, true}, // Leg 3: 135° CCW, Tripod A
-            {4, {"jl41", "jl42", "jl43"}, -45.0 * DEG_TO_RAD, false},  // Leg 4: 45° CW, Tripod B
-            {5, {"jl51", "jl52", "jl53"}, 0.0 * DEG_TO_RAD, true},    // Leg 5: 0°, Tripod A
-            {6, {"jl61", "jl62", "jl63"}, 45.0 * DEG_TO_RAD, false}  // Leg 6: 45° CCW, Tripod B
-        };
+    action_client_ = rclcpp_action::create_client<FollowJointTrajectory>(this, action_name_);
 
-        // Build complete joint names vector
-        for (const auto& leg : leg_configs_) {
-            for (const auto& joint : leg.joint_names) {
-                all_joint_names_.push_back(joint);
-            }
-        }
+    RCLCPP_INFO(this->get_logger(), "Initialized %zu legs", legs_.size());
+    for (const auto & leg : legs_) {
+      RCLCPP_INFO(
+        this->get_logger(),
+        "Leg %d frame: x=%.4f y=%.4f theta=%.1f deg | joints: [%s, %s, %s] | tip home: (%.3f, %.3f, %.3f)",
+        leg.leg_id,
+        leg.frame_pose.x,
+        leg.frame_pose.y,
+        leg.frame_pose.theta,
+        leg.joint_names[0].c_str(),
+        leg.joint_names[1].c_str(),
+        leg.joint_names[2].c_str(),
+        leg.current_tip_position.x,
+        leg.current_tip_position.y,
+        leg.current_tip_position.z);
+    }
+  }
+
+  bool run_startup_sequence()
+  {
+    using namespace std::chrono_literals;
+
+    RCLCPP_INFO(this->get_logger(), "Waiting for action server: %s", action_name_.c_str());
+    if (!action_client_->wait_for_action_server(5s)) {
+      RCLCPP_ERROR(this->get_logger(), "Action server unavailable after 5 seconds");
+      return false;
+    }
+    RCLCPP_INFO(this->get_logger(), "Action server connected");
+
+    const std::vector<TipPosition> test_targets = {
+      {0.150, 0.0, -0.050},
+      {0.110, 0.04, -0.050},
+      {0.110, 0.0, -0.010}
+    };
+
+    for (std::size_t i = 0; i < test_targets.size(); ++i) {
+      const auto & target = test_targets[i];
+      RCLCPP_INFO(
+        this->get_logger(),
+        "Test step %zu/%zu -> target local tip (x=%.3f, y=%.3f, z=%.3f)",
+        i + 1,
+        test_targets.size(),
+        target.x,
+        target.y,
+        target.z);
+
+      if (!send_joint_values_for_all_legs(target, 1.0)) {
+        RCLCPP_ERROR(this->get_logger(), "Failed to execute test step %zu", i + 1);
+        return false;
+      }
+
+      if (i + 1 < test_targets.size()) {
+        RCLCPP_INFO(this->get_logger(), "Sleeping for 2 seconds before next command");
+        std::this_thread::sleep_for(2s);
+      }
     }
 
-    // --- Core Hexapod Gait Logic ---
-    void run_hexapod_gait_sequence()
-    {
-        
-        const double y_forward = Y_HOME + step_length_ / 2.0;
-        const double y_backward = Y_HOME - step_length_ / 2.0;
+    RCLCPP_INFO(this->get_logger(), "Startup gait-controller test sequence complete");
+    return true;
+  }
 
-        int step_counter = 0;
+private:
+  static double clamp(double value, double min_val, double max_val)
+  {
+    return std::max(min_val, std::min(value, max_val));
+  }
 
-        // 1. Initial half-step: Tripod A swings forward, Tripod B pulls backward
-        RCLCPP_INFO(this->get_logger(), "Executing initial half-step...");
-        auto initial_points = generate_coordinated_trajectory(
-            Y_HOME, y_forward,  // Tripod A: swing from home to forward
-            Y_HOME, y_backward,  // Tripod B: pull from forward to home
-            0.75 * step_duration_, true, false);
-        send_and_wait(initial_points);
+  std::vector<Leg> create_legs() const
+  {
+    const auto nan = std::numeric_limits<double>::quiet_NaN();
 
-        // 2. Loop for full coordinated steps
-        for (int i = 0; i < total_full_steps_; ++i)
-        {
-            step_counter = i + 1;
-            RCLCPP_INFO(this->get_logger(), "Executing coordinated step #%d / %d", step_counter, total_full_steps_);
-            
-            // Phase 1: Tripod A pulls backward, Tripod B swings forward
-            auto phase1_points = generate_coordinated_trajectory(
-                y_forward, y_backward,  // Tripod A: pull from forward to backward
-                y_backward, y_forward,      // Tripod B: swing from home to forward
-                step_duration_, false, true);
-            send_and_wait(phase1_points);
-            
-            // Phase 2: Tripod A swings forward, Tripod B pulls backward
-            auto phase2_points = generate_coordinated_trajectory(
-                y_backward, y_forward,  // Tripod A: swing from backward to forward
-                y_forward, y_backward,  // Tripod B: pull from forward to backward
-                step_duration_, true, false);
-            send_and_wait(phase2_points);
-        }
-        RCLCPP_INFO(this->get_logger(), "Completed %d full coordinated cycles.", step_counter);
+    return {
+      {1, {"jl11", "jl12", "jl13"}, {-0.0535, 0.0900, 135.0}, {kXHome, kYHome, kZHome}, {nan, nan, nan}},
+      {2, {"jl21", "jl22", "jl23"}, {-0.0700, 0.0000, 180.0}, {kXHome, kYHome, kZHome}, {nan, nan, nan}},
+      {3, {"jl31", "jl32", "jl33"}, {-0.0535, -0.0900, -135.0}, {kXHome, kYHome, kZHome}, {nan, nan, nan}},
+      {4, {"jl41", "jl42", "jl43"}, {0.0535, 0.0900, 45.0}, {kXHome, kYHome, kZHome}, {nan, nan, nan}},
+      {5, {"jl51", "jl52", "jl53"}, {0.0700, 0.0000, 0.0}, {kXHome, kYHome, kZHome}, {nan, nan, nan}},
+      {6, {"jl61", "jl62", "jl63"}, {0.0535, -0.0900, -45.0}, {kXHome, kYHome, kZHome}, {nan, nan, nan}}
+    };
+  }
 
-        // 3. Final half-step: Tripod A pulls to home, Tripod B swings to home
-        RCLCPP_INFO(this->get_logger(), "Executing final half-step to home...");
-        auto final_points = generate_coordinated_trajectory(
-            y_forward, Y_HOME,      // Tripod A: pull from forward to home
-            y_backward, Y_HOME,     // Tripod B: swing from backward to home
-            0.75 * step_duration_, false, true);
-        send_and_wait(final_points);
+  void compute_ik(
+    const TipPosition & tip,
+    double & j1,
+    double & j2,
+    double & j3)
+  {
+    // Local leg frame IK, right-handed coordinates (x right, y forward, z up).
+    const double y = tip.y;
+    const double x = tip.x;
+    const double z = tip.z;
+
+    j1 = -std::atan2(y, x);
+
+    const double x_prime = std::sqrt(x * x + y * y) - kL1;
+    double d = std::sqrt(x_prime * x_prime + z * z);
+
+    const double min_reach = std::abs(kL2 - kL3);
+    const double max_reach = kL2 + kL3;
+    if (d > max_reach || d < min_reach) {
+      RCLCPP_WARN_THROTTLE(
+        this->get_logger(),
+        *this->get_clock(),
+        1000,
+        "IK Warning: Position (%.3f, %.3f) is unreachable. D=%.3f",
+        x_prime,
+        z,
+        d);
+      d = clamp(d, min_reach, max_reach);
     }
 
-    // --- Coordinated Trajectory Generation ---
-    std::vector<trajectory_msgs::msg::JointTrajectoryPoint> generate_coordinated_trajectory(
-        double tripod_a_y_start, double tripod_a_y_end,
-        double tripod_b_y_start, double tripod_b_y_end,
-        double duration, bool tripod_a_swing, bool tripod_b_swing)
-    {
-        std::vector<trajectory_msgs::msg::JointTrajectoryPoint> points;
-        std::map<int, std::vector<double>> last_angles; // leg_id -> last angles
-        
-        // Initialize last angles
-        for (const auto& leg : leg_configs_) {
-            last_angles[leg.leg_id] = {INFINITY, INFINITY, INFINITY};
-        }
+    const double alpha1 = std::atan2(-z, x_prime);
 
-        for (double t = 0; t <= duration; t += DISCRETIZATION_TIME_STEP)
-        {
-            trajectory_msgs::msg::JointTrajectoryPoint point;
-            point.time_from_start = rclcpp::Duration::from_seconds(t);
-            point.positions.resize(all_joint_names_.size());
-            
-            bool add_points = false;
+    const double cos_alpha2 = clamp((kL2 * kL2 + d * d - kL3 * kL3) / (2.0 * kL2 * d), -1.0, 1.0);
+    const double alpha2 = std::acos(cos_alpha2);
 
-            for (const auto& leg : leg_configs_)
-            {
-                double y_start, y_end;
-                bool is_swing;
+    const double cos_knee = clamp((kL2 * kL2 + kL3 * kL3 - d * d) / (2.0 * kL2 * kL3), -1.0, 1.0);
 
-                if (leg.is_tripod_a) {
-                    y_start = tripod_a_y_start;
-                    y_end = tripod_a_y_end;
-                    is_swing = tripod_a_swing;
-                } else {
-                    y_start = tripod_b_y_start;
-                    y_end = tripod_b_y_end;
-                    is_swing = tripod_b_swing;
-                }
+    j2 = alpha1 - alpha2;
+    j3 = kPi - std::acos(cos_knee);
+  }
 
-                double y_global, z_global;
-                compute_leg_position(y_start, y_end, t, duration, is_swing, y_global, z_global);
+  bool send_joint_values_for_all_legs(const TipPosition & target_tip, double time_from_start_sec)
+  {
+    std::vector<std::string> all_joint_names;
+    std::vector<double> all_joint_positions;
+    all_joint_names.reserve(legs_.size() * 3);
+    all_joint_positions.reserve(legs_.size() * 3);
 
-                // Rotate coordinates for this leg
-                double y_rotated, x_rotated;
-                rotate_coordinates(Y_HOME, X_HOME, y_global, X_HOME, leg.rotation_angle, y_rotated, x_rotated);
+    for (auto & leg : legs_) {
+      double j1 = 0.0;
+      double j2 = 0.0;
+      double j3 = 0.0;
 
-                // Calculate inverse kinematics
-                double j1, j2, j3;
-                IK(LEG_L1, LEG_L2, LEG_L3, y_rotated, x_rotated, z_global, j1, j2, j3);
+      compute_ik(target_tip, j1, j2, j3);
 
-                // Check if significant change occurred for this leg
-                if (points.empty()) {
-                    add_points = true;
-                    last_angles[leg.leg_id] = {j1, j2, j3};
+      leg.current_tip_position = target_tip;
+      leg.current_joint_angles = {j1, j2, j3};
 
-                } else {
-                    std::array<double, 3> new_angles = {j1, j2, j3};
-                
-                    for (int i = 0; i < 3; ++i) {
-                        if (std::abs(new_angles[i] - last_angles[leg.leg_id][i]) > MIN_ANGLE_CHANGE) {
-                            last_angles[leg.leg_id][i] = new_angles[i];
-                            add_points = true;
-                        }
-                    }
-                }
+      all_joint_names.insert(
+        all_joint_names.end(),
+        leg.joint_names.begin(),
+        leg.joint_names.end());
+      all_joint_positions.push_back(j1);
+      all_joint_positions.push_back(j2);
+      all_joint_positions.push_back(j3);
 
-                // Set joint positions in the correct order
-                int base_idx = (leg.leg_id - 1) * 3;
-                point.positions[base_idx] = j1;
-                point.positions[base_idx + 1] = j2;
-                point.positions[base_idx + 2] = j3;
-            }
-
-            if (add_points) {
-                points.push_back(point);
-            }
-        }
-        return points;
+      RCLCPP_INFO(
+        this->get_logger(),
+        "Leg %d IK -> J1=%.5f J2=%.5f J3=%.5f",
+        leg.leg_id,
+        j1,
+        j2,
+        j3);
     }
 
-    void compute_leg_position(double y_start, double y_end, double t, double duration, 
-                             bool is_swing, double& y_global, double& z_global)
-    {
-        if (is_swing) {
-            // Swing trajectory with arc
-            double C = std::abs(y_end - y_start); // Chord length
-            double h = step_height_; // Arc height
+    trajectory_msgs::msg::JointTrajectory trajectory;
+    trajectory.joint_names = all_joint_names;
 
-            if (C < 1e-6 || h < 1e-6) { // Straight line if no length or height
-                double L_total = std::abs(y_end - y_start);
-                double L = compute_trapezoidal_pos(t, duration, L_total);
-                y_global = y_start + (y_end - y_start) * (L / L_total);
-                z_global = Z_HOME;
-                return;
-            }
-            
-            double R = (h * h + (C / 2.0) * (C / 2.0)) / (2.0 * h); // Circle radius
-            double theta = 2.0 * std::asin(C / (2.0 * R)); // Total central angle
-            double Lt = R * theta; // Total arc length
-            
-            double y_center = (y_start + y_end) / 2.0;
-            
-            double L = compute_trapezoidal_pos(t, duration, Lt); // Arc length from negative end
-            double phi = -theta / 2.0 + L / R; // =/- Angle to local_y
-            double y_local = R * std::sin(phi); // y distance from step center
+    trajectory_msgs::msg::JointTrajectoryPoint point;
+    point.positions = all_joint_positions;
+    const int32_t sec = static_cast<int32_t>(time_from_start_sec);
+    const double frac_sec = time_from_start_sec - static_cast<double>(sec);
+    point.time_from_start.sec = sec;
+    point.time_from_start.nanosec = static_cast<uint32_t>(frac_sec * 1e9);
+    trajectory.points.push_back(point);
 
-            // Z(y): Vertical coordinate from horizontal coordinate y
-            double z_local = std::sqrt(R * R - y_local * y_local) - std::sqrt(R * R - (C/2.0)*(C/2.0));
-            
-            y_global = y_center + y_local; // True y
-            z_global = Z_HOME + z_local; // Corresponding Z
-        } else {
-            // Pull trajectory (straight line)
-            double L_total = std::abs(y_end - y_start);
-            double L = compute_trapezoidal_pos(t, duration, L_total); // Length from positive end
-            y_global = y_start + (y_end - y_start) * (L / L_total); // True y
-            z_global = Z_HOME; // Corresponding Z
-        }
+    FollowJointTrajectory::Goal goal_msg;
+    goal_msg.trajectory = trajectory;
+
+    RCLCPP_INFO(
+      this->get_logger(),
+      "Sending trajectory goal with %zu joints and %.2fs duration",
+      all_joint_positions.size(),
+      time_from_start_sec);
+
+    auto goal_handle_future = action_client_->async_send_goal(goal_msg);
+    const auto send_status = rclcpp::spin_until_future_complete(this->get_node_base_interface(), goal_handle_future);
+    if (send_status != rclcpp::FutureReturnCode::SUCCESS) {
+      RCLCPP_ERROR(this->get_logger(), "Failed to send goal to action server");
+      return false;
     }
 
-    // --- Coordinate Transformation ---
-    void rotate_coordinates(double y_c, double x_c, double y_in, double x_in, double angle, double& y_out, double& x_out)
-    {
-        // Translate point to origin
-        double x_translated = x_in - x_c;
-        double y_translated = y_in - y_c;
-        
-        // Rotate around origin
-        double cos_a = std::cos(angle);
-        double sin_a = std::sin(angle);
-        double x_rotated = x_translated * cos_a - y_translated * sin_a;
-        double y_rotated = x_translated * sin_a + y_translated * cos_a;
-        
-        // Translate back to original position
-        x_out = x_rotated + x_c;
-        y_out = y_rotated + y_c;
+    auto goal_handle = goal_handle_future.get();
+    if (!goal_handle) {
+      RCLCPP_ERROR(this->get_logger(), "Action server rejected trajectory goal");
+      return false;
     }
 
-    // --- L(t): Path length from time using a 1/3-1/3-1/3 trapezoidal velocity profile ---
-    double compute_trapezoidal_pos(double t, double T, double L_total)
-    {
-        if (T <= 0) return (t > 0) ? L_total : 0.0;
-        
-        double ta = T / 3.0; // Accel, Cruise, and Decel phases are each 1/3 of total time T
-        double vmax = 1.5 * L_total / T; // vmax = L_total / (T - ta)
-        double a = vmax / ta;
-
-        if (t <= 0.0) return 0.0;
-
-        if (t < ta) { // Acceleration phase
-            return 0.5 * a * t * t;
-        } else if (t < 2.0 * ta) { // Cruise phase
-            return 0.5 * a * ta * ta + vmax * (t - ta);
-        } else if (t <= T) { // Deceleration phase
-            return L_total - 0.5 * a * (T - t) * (T-t);
-        } else { // After T
-            return L_total;
-        }
+    auto result_future = action_client_->async_get_result(goal_handle);
+    const auto result_status =
+      rclcpp::spin_until_future_complete(this->get_node_base_interface(), result_future);
+    if (result_status != rclcpp::FutureReturnCode::SUCCESS) {
+      RCLCPP_ERROR(this->get_logger(), "Failed while waiting for action result");
+      return false;
     }
 
-    // --- IK: Calculates joint angles from tip position ---
-    void IK(double L1, double L2, double L3, double Y, double X, double Z, 
-            double &J1, double &J2, double &J3)
-    {
-        // Base joint angle
-        J1 = -std::atan2(Y, X); 
-        
-        // Solving for J2/J3 in the 2D plane defined by the leg links
-        double x_prime = std::sqrt(X*X + Y*Y) - L1 ; // Horizontal distance from J2 axis
-        double D = std::sqrt(x_prime*x_prime + Z*Z); // Straight line distance from J2 axis to tip
-        
-        if (D > (L2 + L3) || D < std::abs(L2-L3)) {
-             RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000, 
-                 "IK Warning: Position (%.3f, %.3f) is unreachable. D=%.3f", x_prime, Z, D);
-             // Clamp to the boundary to avoid acos domain errors
-             D = std::min(D, L2 + L3);
-             D = std::max(D, std::abs(L2-L3));
-        }
-
-        // Using Law of Cosines
-        double alpha1 = std::atan2(-Z, x_prime);
-        double alpha2 = std::acos((L2*L2 + D*D - L3*L3) / (2.0 * L2 * D));
-        
-        J2 = alpha1 - alpha2; // Second joint angle
-        J3 = M_PI - std::acos((L2*L2 + L3*L3 - D*D) / (2.0 * L2 * L3)); // Third joint angle
+    const auto wrapped_result = result_future.get();
+    if (wrapped_result.code != rclcpp_action::ResultCode::SUCCEEDED) {
+      RCLCPP_ERROR(
+        this->get_logger(),
+        "Trajectory action failed with result code %d",
+        static_cast<int>(wrapped_result.code));
+      return false;
     }
 
-    // --- Action Client Communication ---
-    void send_and_wait(const std::vector<trajectory_msgs::msg::JointTrajectoryPoint>& points)
-    {
-        if (points.empty()) {
-            RCLCPP_WARN(this->get_logger(), "send_and_wait called with an empty trajectory. Skipping.");
-            return;
-        }
+    RCLCPP_INFO(this->get_logger(), "Trajectory action succeeded");
+    return true;
+  }
 
-        using namespace std::placeholders;
-        
-        control_msgs::action::FollowJointTrajectory::Goal goal_msg;
-        goal_msg.trajectory.joint_names = all_joint_names_;
-        goal_msg.trajectory.points = points;
-        // Add a small tolerance
-        goal_msg.goal_time_tolerance = rclcpp::Duration::from_seconds(0.1);
+  std::string action_name_;
+  std::vector<Leg> legs_;
+  rclcpp_action::Client<FollowJointTrajectory>::SharedPtr action_client_;
 
-        auto send_goal_options = rclcpp_action::Client<control_msgs::action::FollowJointTrajectory>::SendGoalOptions();
-        send_goal_options.goal_response_callback = [this](auto future) {
-            auto goal_handle = future.get();
-            if (!goal_handle) {
-                RCLCPP_ERROR(this->get_logger(), "Goal was rejected by server");
-            } else {
-                RCLCPP_INFO(this->get_logger(), "Goal accepted by server, waiting for result");
-            }
-        };
+  static constexpr double kPi = 3.14159265358979323846;
+  static constexpr double kXHome = 0.110;
+  static constexpr double kYHome = 0.0;
+  static constexpr double kZHome = -0.050;
 
-        auto goal_handle_future = action_client_->async_send_goal(goal_msg, send_goal_options);
-
-        // Wait for the goal to be sent and acknowledged
-        if (rclcpp::spin_until_future_complete(this->get_node_base_interface(), goal_handle_future) !=
-            rclcpp::FutureReturnCode::SUCCESS)
-        {
-            RCLCPP_ERROR(this->get_logger(), "Send goal call failed");
-            return;
-        }
-
-        auto goal_handle = goal_handle_future.get();
-        if (!goal_handle) {
-            RCLCPP_ERROR(this->get_logger(), "Goal was rejected by server");
-            return;
-        }
-        
-        // Wait for the result
-        auto result_future = action_client_->async_get_result(goal_handle);
-        if (rclcpp::spin_until_future_complete(this->get_node_base_interface(), result_future) !=
-            rclcpp::FutureReturnCode::SUCCESS)
-        {
-            RCLCPP_ERROR(this->get_logger(), "Failed to get result");
-            return;
-        }
-
-        auto result_wrapper = result_future.get();
-        if(result_wrapper.code == rclcpp_action::ResultCode::SUCCEEDED)
-        {
-            RCLCPP_INFO(this->get_logger(), "Trajectory executed successfully.");
-        } else {
-            RCLCPP_ERROR(this->get_logger(), "Trajectory failed with error code: %d", result_wrapper.result->error_code);
-        }
-    }
+  static constexpr double kL1 = 0.0385;
+  static constexpr double kL2 = 0.0700;
+  static constexpr double kL3 = 0.1020;
 };
 
-int main(int argc, char *argv[])
+int main(int argc, char ** argv)
 {
-    rclcpp::init(argc, argv);
-    auto node = std::make_shared<GaitController>();
-    return 0;
+  rclcpp::init(argc, argv);
+
+  auto node = std::make_shared<GaitController>();
+  const bool ok = node->run_startup_sequence();
+
+  rclcpp::shutdown();
+  return ok ? 0 : 1;
 }

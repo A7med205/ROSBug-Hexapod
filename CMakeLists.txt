@@ -11,6 +11,7 @@ find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(trajectory_msgs REQUIRED)
 
 install(DIRECTORY
   launch
@@ -23,10 +24,11 @@ install(DIRECTORY
 
 add_executable(gait_controller src/gait_controller.cpp)
 
-target_link_libraries(gait_controller PUBLIC
-  ${control_msgs_TARGETS}
-  rclcpp::rclcpp
-  rclcpp_action::rclcpp_action
+ament_target_dependencies(gait_controller
+  control_msgs
+  rclcpp
+  rclcpp_action
+  trajectory_msgs
 )
 
 
