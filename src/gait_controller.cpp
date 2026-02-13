@@ -74,7 +74,7 @@ public:
     if (!gait_coordinator()) {
       return false;
     }
-    RCLCPP_INFO(this->get_logger(), "First half-step (pull+swing) complete at master time t=%.3f", g_master_path_time);
+    RCLCPP_INFO(this->get_logger(), "Gait sequence complete at master time t=%.3f", g_master_path_time);
     return true;
   }
 
@@ -102,12 +102,19 @@ private:
     constexpr double straight_speed = 0.2;                  // m/s (+Y)
     constexpr double diag_speed_x = 0.15, diag_speed_y = 0.20; // m/s
     constexpr double angular_speed = 15.0 * kPi / 180.0;    // rad/s
+    constexpr double external_orbit_r = 0.30;               // m
+    constexpr double external_orbit_w = 60.0 * kPi / 180.0; // rad/s
 
     BasePose2D pose{0.0, 0.0, 0.0};
     switch (trajectory_id) {
       case 0: pose.y = straight_speed * t; break;
       case 1: pose.x = diag_speed_x * t; pose.y = diag_speed_y * t; break;
       case 2: pose.theta = angular_speed * t; break;
+      case 3:
+        pose.x = external_orbit_r * (std::cos(external_orbit_w * t) - 1.0);
+        pose.y = external_orbit_r * std::sin(external_orbit_w * t);
+        pose.theta = external_orbit_w * t;
+        break;
       default: pose.y = straight_speed * t; break;
     }
     return pose;
@@ -119,6 +126,7 @@ private:
       case 0: return "straight +Y";
       case 1: return "diagonal +X/+Y";
       case 2: return "in-place rotation";
+      case 3: return "external-center orbit";
       default: return "unknown(default straight +Y)";
     }
   }
@@ -191,16 +199,14 @@ private:
     return true;
   }
 
-  WorldNeutralPose wbase_to_wnuetral(double t, int leg_id)
+  WorldNeutralPose wbase_to_wnuetral(double t, int leg_id, int trajectory_id)
   {
-    RCLCPP_INFO(this->get_logger(), "wbase_to_wnuetral IN(t=%.6f,leg_id=%d)", t, leg_id);
     if (leg_id < 1 || leg_id > static_cast<int>(legs_.size())) {
       RCLCPP_ERROR(this->get_logger(), "Invalid leg_id=%d in wbase_to_wnuetral", leg_id);
-      RCLCPP_INFO(this->get_logger(), "wbase_to_wnuetral OUT(x=0.000000,y=0.000000,theta=0.000000)");
       return {0.0, 0.0, 0.0};
     }
 
-    const auto & base = master_path(t, kStraightTrajectoryId);
+    const auto & base = master_path(t, trajectory_id);
     const auto & leg = legs_[static_cast<std::size_t>(leg_id - 1)];
 
     const double c = std::cos(base.theta), s = std::sin(base.theta);
@@ -212,20 +218,17 @@ private:
     const double neutral_world_x = leg_origin_x + cp * kXHome - sp * kYHome;
     const double neutral_world_y = leg_origin_y + sp * kXHome + cp * kYHome;
 
-    const WorldNeutralPose out{neutral_world_x, neutral_world_y, theta_world};
-    RCLCPP_INFO(this->get_logger(), "wbase_to_wnuetral OUT(x=%.6f,y=%.6f,theta=%.6f)", out.x, out.y, out.theta);
-    return out;
+    return {neutral_world_x, neutral_world_y, theta_world};
   }
 
-  std::array<LocalPose2D, 3> future_tip_poses(bool tripod_a, double start_time)
+  std::array<LocalPose2D, 3> future_tip_poses(bool tripod_a, double start_time, int trajectory_id)
   {
-    RCLCPP_INFO(this->get_logger(), "future_tip_poses IN(tripod_a=%s,start_time=%.6f)", tripod_a ? "true" : "false", start_time);
     const auto & tripod = tripod_indices(tripod_a);
     std::array<WorldNeutralPose, 3> start_world{}, end_world{};
     std::array<LocalPose2D, 3> local_displacements{};
 
     for (std::size_t i = 0; i < tripod.size(); ++i) {
-      start_world[i] = wbase_to_wnuetral(start_time, legs_[tripod[i]].leg_id);
+      start_world[i] = wbase_to_wnuetral(start_time, legs_[tripod[i]].leg_id, trajectory_id);
       end_world[i] = start_world[i];
     }
 
@@ -235,7 +238,7 @@ private:
     for (std::size_t step = 1; step <= max_steps; ++step) {
       t += discrete_step;
       for (std::size_t i = 0; i < tripod.size(); ++i) {
-        const auto current = wbase_to_wnuetral(t, legs_[tripod[i]].leg_id);
+        const auto current = wbase_to_wnuetral(t, legs_[tripod[i]].leg_id, trajectory_id);
         end_world[i] = current;
 
         const double dx = current.x - start_world[i].x;
@@ -255,15 +258,6 @@ private:
       local_displacements[i].y = -st * dx_world + ct * dy_world;
     }
 
-    RCLCPP_INFO(
-      this->get_logger(),
-      "future_tip_poses OUT(d0=(%.6f,%.6f),d1=(%.6f,%.6f),d2=(%.6f,%.6f))",
-      local_displacements[0].x,
-      local_displacements[0].y,
-      local_displacements[1].x,
-      local_displacements[1].y,
-      local_displacements[2].x,
-      local_displacements[2].y);
     return local_displacements;
   }
 
@@ -275,13 +269,6 @@ private:
     double & end_time,
     std::size_t & point_count)
   {
-    RCLCPP_INFO(
-      this->get_logger(),
-      "build_pulls IN(tripod_a=%s,start_time=%.6f,trajectory_id=%d,limit_hits_required=%d)",
-      tripod_a ? "true" : "false",
-      start_time,
-      trajectory_id,
-      limit_hits_required);
     if (limit_hits_required < 1) limit_hits_required = 1;
 
     const auto & tripod = tripod_indices(tripod_a);
@@ -326,12 +313,6 @@ private:
       base_prev = base_curr;
       if (first_leg_over_limit >= 0) {
         ++limit_hits;
-        RCLCPP_INFO(
-          this->get_logger(),
-          "Pull path limit hit %d/%d by leg %d",
-          limit_hits,
-          limit_hits_required,
-          first_leg_over_limit);
 
         if (limit_hits >= limit_hits_required) {
           pull_complete = true;
@@ -350,7 +331,6 @@ private:
         this->get_logger(),
         "build_pulls hit max steps before reaching %d limit hits",
         limit_hits_required);
-      RCLCPP_INFO(this->get_logger(), "build_pulls OUT=false");
       return false;
     }
 
@@ -359,7 +339,6 @@ private:
     end_time = t;
     point_count = g_3d_path[tripod[0]].size();
     g_master_path_time = end_time;
-    RCLCPP_INFO(this->get_logger(), "build_pulls OUT=true(end_time=%.6f,point_count=%zu)", end_time, point_count);
     return true;
   }
 
@@ -368,19 +347,12 @@ private:
     double start_time,
     double pull_duration,
     std::size_t point_count,
-    bool end_to_neutral)
+    bool end_to_neutral,
+    int trajectory_id)
   {
-    RCLCPP_INFO(
-      this->get_logger(),
-      "build_swings IN(tripod_a=%s,start_time=%.6f,pull_duration=%.6f,point_count=%zu,end_to_neutral=%s)",
-      tripod_a ? "true" : "false",
-      start_time,
-      pull_duration,
-      point_count,
-      end_to_neutral ? "true" : "false");
     const auto & tripod = tripod_indices(tripod_a);
     std::array<LocalPose2D, 3> local_end_displacements{};
-    if (!end_to_neutral) local_end_displacements = future_tip_poses(tripod_a, start_time);
+    if (!end_to_neutral) local_end_displacements = future_tip_poses(tripod_a, start_time, trajectory_id);
 
     if (point_count < 2) {
       point_count = static_cast<std::size_t>(std::round(pull_duration / discrete_step)) + 1;
@@ -408,54 +380,11 @@ private:
       legs_[leg_idx].current_tip_position = {end_x, end_y, end_z};
     }
 
-    RCLCPP_INFO(this->get_logger(), "build_swings OUT=true");
     return true;
-  }
-
-  void log_decimated_tip_paths(const std::string & phase_label, std::size_t decimation) const
-  {
-    if (decimation == 0) decimation = 1;
-    if (g_3d_path[0].empty()) {
-      RCLCPP_WARN(this->get_logger(), "Skipping path log for %s: empty path set", phase_label.c_str());
-      return;
-    }
-
-    const std::size_t points_per_leg = g_3d_path[0].size();
-    for (std::size_t leg_idx = 1; leg_idx < g_3d_path.size(); ++leg_idx) {
-      if (g_3d_path[leg_idx].size() != points_per_leg) {
-        RCLCPP_ERROR(this->get_logger(), "Cannot log %s: path size mismatch across legs", phase_label.c_str());
-        return;
-      }
-    }
-
-    RCLCPP_INFO(
-      this->get_logger(),
-      "Decimated local tip paths for %s: points=%zu, n=%zu",
-      phase_label.c_str(),
-      points_per_leg,
-      decimation);
-
-    const auto log_index = [&](std::size_t idx) {
-      RCLCPP_INFO(this->get_logger(), "path[%zu]", idx);
-      for (std::size_t leg_idx = 0; leg_idx < g_3d_path.size(); ++leg_idx) {
-        const auto & p = g_3d_path[leg_idx][idx];
-        RCLCPP_INFO(
-          this->get_logger(),
-          "  leg%zu local tip: (%.4f, %.4f, %.4f)",
-          leg_idx + 1,
-          p.x,
-          p.y,
-          p.z);
-      }
-    };
-
-    for (std::size_t idx = 0; idx < points_per_leg; idx += decimation) log_index(idx);
-    if ((points_per_leg - 1) % decimation != 0) log_index(points_per_leg - 1);
   }
 
   bool gait_coordinator()
   {
-    RCLCPP_INFO(this->get_logger(), "gait_coordinator IN");
     if (!initialize_neutral_joint_values()) return false;
 
     const int trajectory_id = kStraightTrajectoryId;
@@ -488,34 +417,32 @@ private:
             pull_end_time,
             pull_point_count))
       {
-        RCLCPP_INFO(this->get_logger(), "gait_coordinator::run_phase OUT=false(build_pulls)");
         return false;
       }
 
       const double pull_duration = pull_end_time - pull_start_time;
-      if (!build_swings(swing_tripod_a, pull_end_time, pull_duration, pull_point_count, end_swing_to_neutral)) {
-        RCLCPP_INFO(this->get_logger(), "gait_coordinator::run_phase OUT=false(build_swings)");
+      if (!build_swings(
+            swing_tripod_a,
+            pull_end_time,
+            pull_duration,
+            pull_point_count,
+            end_swing_to_neutral,
+            trajectory_id))
+      {
         return false;
       }
-      log_decimated_tip_paths(phase_label, 10);
       if (!execute_current_paths()) {
-        RCLCPP_INFO(this->get_logger(), "gait_coordinator::run_phase OUT=false(execute_current_paths)");
         return false;
       }
 
       g_master_path_time = pull_end_time;
       last_pull_tripod_a = pull_tripod_a;
       phase_end_times.push_back(g_master_path_time);
-      RCLCPP_INFO(
-        this->get_logger(),
-        "gait_coordinator::run_phase OUT=true(phase=%s,pull_end_time=%.6f)",
-        phase_label.c_str(),
-        pull_end_time);
+      RCLCPP_INFO(this->get_logger(), "gait_coordinator phase complete: %s at t=%.6f", phase_label.c_str(), pull_end_time);
       return true;
     };
 
     if (!run_phase(true, 1, "first half-step", false)) {
-      RCLCPP_INFO(this->get_logger(), "gait_coordinator OUT=false(first-half-step)");
       return false;
     }
 
@@ -527,21 +454,18 @@ private:
             "full step " + std::to_string(full_step + 1),
             false))
       {
-        RCLCPP_INFO(this->get_logger(), "gait_coordinator OUT=false(full-step-%d)", full_step + 1);
         return false;
       }
     }
 
     const bool final_pull_tripod_a = !last_pull_tripod_a;
     if (!run_phase(final_pull_tripod_a, 1, "final half-step", true)) {
-      RCLCPP_INFO(this->get_logger(), "gait_coordinator OUT=false(final-half-step)");
       return false;
     }
 
     for (std::size_t i = 0; i < phase_end_times.size(); ++i) {
       RCLCPP_INFO(this->get_logger(), "Phase %zu end master time: %.3f", i + 1, phase_end_times[i]);
     }
-    RCLCPP_INFO(this->get_logger(), "gait_coordinator OUT=true");
     return true;
   }
 
