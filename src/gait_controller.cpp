@@ -25,6 +25,7 @@ double discrete_step = 0.01;
 double min_angle = 1.0;
 double limit_radius = 0.05;
 double swing_height = 0.02;
+int num_steps = 2;
 double g_master_path_time = 0.0;
 std::array<std::vector<Point3D>, 6> g_3d_path;
 
@@ -48,14 +49,16 @@ public:
   GaitController() : Node("gait_controller")
   {
     action_name_ = this->declare_parameter<std::string>("action_name", "/joint_trajectory_controller/follow_joint_trajectory");
+    const int64_t configured_num_steps = this->declare_parameter<int64_t>("num_steps", static_cast<int64_t>(num_steps));
+    num_steps = static_cast<int>(std::max<int64_t>(0, configured_num_steps));
     legs_ = create_legs();
     for (auto & tip : path_tip_state_) tip = {kXHome, kYHome, kZHome};
     action_client_ = rclcpp_action::create_client<FollowJointTrajectory>(this, action_name_);
 
     RCLCPP_INFO(
       this->get_logger(),
-      "Initialized %zu legs | discrete_step=%.3f, min_angle=%.1f deg, limit_radius=%.3f, swing_height=%.3f",
-      legs_.size(), discrete_step, min_angle, limit_radius, swing_height);
+      "Initialized %zu legs | discrete_step=%.3f, min_angle=%.1f deg, limit_radius=%.3f, swing_height=%.3f, num_steps=%d",
+      legs_.size(), discrete_step, min_angle, limit_radius, swing_height, num_steps);
   }
 
   bool run_startup_sequence()
@@ -248,8 +251,16 @@ private:
     return local_displacements;
   }
 
-  bool build_pulls(bool tripod_a, double start_time, int trajectory_id, double & end_time, std::size_t & point_count)
+  bool build_pulls(
+    bool tripod_a,
+    double start_time,
+    int trajectory_id,
+    int limit_hits_required,
+    double & end_time,
+    std::size_t & point_count)
   {
+    if (limit_hits_required < 1) limit_hits_required = 1;
+
     const auto & tripod = tripod_indices(tripod_a);
     for (auto & path : g_3d_path) { path.clear(); path.reserve(2048); }
     for (std::size_t i = 0; i < legs_.size(); ++i) {
@@ -261,10 +272,12 @@ private:
     for (std::size_t i = 0; i < tripod.size(); ++i) {
       start_tip_xy[i] = {path_tip_state_[tripod[i]].x, path_tip_state_[tripod[i]].y};
     }
+    auto radius_origin_xy = start_tip_xy;
 
     BasePose2D base_prev = master_path(start_time, trajectory_id);
     constexpr std::size_t max_path_steps = 10000;
-    bool limit_reached = false;
+    bool pull_complete = false;
+    int limit_hits = 0;
     double t = start_time;
 
     for (std::size_t step_idx = 1; step_idx <= max_path_steps; ++step_idx) {
@@ -281,22 +294,39 @@ private:
         tip.z = kZHome;
         g_3d_path[leg_idx].push_back(tip);
 
-        const double radius = std::hypot(tip.x - start_tip_xy[i].x, tip.y - start_tip_xy[i].y);
+        const double radius = std::hypot(tip.x - radius_origin_xy[i].x, tip.y - radius_origin_xy[i].y);
         if (first_leg_over_limit < 0 && radius >= limit_radius) {
           first_leg_over_limit = static_cast<int>(legs_[leg_idx].leg_id);
-          limit_reached = true;
         }
       }
 
       base_prev = base_curr;
-      if (limit_reached) {
-        RCLCPP_INFO(this->get_logger(), "Pull path limit reached by leg %d", first_leg_over_limit);
-        break;
+      if (first_leg_over_limit >= 0) {
+        ++limit_hits;
+        RCLCPP_INFO(
+          this->get_logger(),
+          "Pull path limit hit %d/%d by leg %d",
+          limit_hits,
+          limit_hits_required,
+          first_leg_over_limit);
+
+        if (limit_hits >= limit_hits_required) {
+          pull_complete = true;
+          break;
+        }
+
+        for (std::size_t i = 0; i < tripod.size(); ++i) {
+          const auto leg_idx = tripod[i];
+          radius_origin_xy[i] = {path_tip_state_[leg_idx].x, path_tip_state_[leg_idx].y};
+        }
       }
     }
 
-    if (!limit_reached) {
-      RCLCPP_WARN(this->get_logger(), "build_pulls hit max steps before limit radius %.3f", limit_radius);
+    if (!pull_complete) {
+      RCLCPP_WARN(
+        this->get_logger(),
+        "build_pulls hit max steps before reaching %d limit hits",
+        limit_hits_required);
       return false;
     }
 
@@ -308,10 +338,16 @@ private:
     return true;
   }
 
-  bool build_swings(bool tripod_a, double start_time, double pull_duration, std::size_t point_count)
+  bool build_swings(
+    bool tripod_a,
+    double start_time,
+    double pull_duration,
+    std::size_t point_count,
+    bool end_to_neutral)
   {
     const auto & tripod = tripod_indices(tripod_a);
-    const auto local_end_displacements = future_tip_poses(tripod_a, start_time);
+    std::array<LocalPose2D, 3> local_end_displacements{};
+    if (!end_to_neutral) local_end_displacements = future_tip_poses(tripod_a, start_time);
 
     if (point_count < 2) {
       point_count = static_cast<std::size_t>(std::round(pull_duration / discrete_step)) + 1;
@@ -321,9 +357,9 @@ private:
     for (std::size_t i = 0; i < tripod.size(); ++i) {
       const auto leg_idx = tripod[i];
       const auto start_tip = legs_[leg_idx].current_tip_position;
-      const double end_x = start_tip.x + local_end_displacements[i].x;
-      const double end_y = start_tip.y + local_end_displacements[i].y;
-      const double end_z = start_tip.z;
+      const double end_x = end_to_neutral ? kXHome : (start_tip.x + local_end_displacements[i].x);
+      const double end_y = end_to_neutral ? kYHome : (start_tip.y + local_end_displacements[i].y);
+      const double end_z = end_to_neutral ? kZHome : start_tip.z;
 
       g_3d_path[leg_idx].clear();
       g_3d_path[leg_idx].reserve(point_count);
@@ -332,7 +368,7 @@ private:
         const double s = (point_count <= 1) ? 1.0 : static_cast<double>(p) / static_cast<double>(point_count - 1);
         const double x = start_tip.x + s * (end_x - start_tip.x);
         const double y = start_tip.y + s * (end_y - start_tip.y);
-        const double z = start_tip.z + swing_height * std::sin(kPi * s);
+        const double z = (1.0 - s) * start_tip.z + s * end_z + swing_height * std::sin(kPi * s);
         g_3d_path[leg_idx].push_back({x, y, z});
       }
 
@@ -347,23 +383,68 @@ private:
     if (!initialize_neutral_joint_values()) return false;
 
     const int trajectory_id = kStraightTrajectoryId;
-    const bool pull_tripod_a = true;
-    const bool swing_tripod_a = false;
+    std::vector<double> phase_end_times;
+    phase_end_times.reserve(static_cast<std::size_t>(num_steps) + 2);
+    bool last_pull_tripod_a = true;
 
-    const double pull_start_time = g_master_path_time;
-    double pull_end_time = pull_start_time;
-    std::size_t pull_point_count = 0;
+    auto run_phase = [&](
+      bool pull_tripod_a,
+      int pull_limit_hits_required,
+      const std::string & phase_label,
+      bool end_swing_to_neutral) -> bool {
+      const bool swing_tripod_a = !pull_tripod_a;
+      const double pull_start_time = g_master_path_time;
+      double pull_end_time = pull_start_time;
+      std::size_t pull_point_count = 0;
 
-    RCLCPP_INFO(this->get_logger(), "gait_coordinator: first half-step pull on tripod A using %s", trajectory_name(trajectory_id).c_str());
-    if (!build_pulls(pull_tripod_a, pull_start_time, trajectory_id, pull_end_time, pull_point_count)) return false;
+      RCLCPP_INFO(
+        this->get_logger(),
+        "gait_coordinator: %s | pull tripod %c | limit hits=%d",
+        phase_label.c_str(),
+        pull_tripod_a ? 'A' : 'B',
+        pull_limit_hits_required);
 
-    const double pull_duration = pull_end_time - pull_start_time;
-    RCLCPP_INFO(this->get_logger(), "gait_coordinator: first half-step swing on tripod B with duration %.3f", pull_duration);
-    if (!build_swings(swing_tripod_a, pull_end_time, pull_duration, pull_point_count)) return false;
+      if (!build_pulls(
+            pull_tripod_a,
+            pull_start_time,
+            trajectory_id,
+            pull_limit_hits_required,
+            pull_end_time,
+            pull_point_count))
+      {
+        return false;
+      }
 
-    if (!execute_current_paths()) return false;
+      const double pull_duration = pull_end_time - pull_start_time;
+      if (!build_swings(swing_tripod_a, pull_end_time, pull_duration, pull_point_count, end_swing_to_neutral)) return false;
+      if (!execute_current_paths()) return false;
 
-    g_master_path_time = pull_end_time;
+      g_master_path_time = pull_end_time;
+      last_pull_tripod_a = pull_tripod_a;
+      phase_end_times.push_back(g_master_path_time);
+      return true;
+    };
+
+    if (!run_phase(true, 1, "first half-step", false)) return false;
+
+    for (int full_step = 0; full_step < num_steps; ++full_step) {
+      const bool pull_tripod_a = (full_step % 2 == 1);  // 1st full: B pulls, 2nd full: A pulls
+      if (!run_phase(
+            pull_tripod_a,
+            2,
+            "full step " + std::to_string(full_step + 1),
+            false))
+      {
+        return false;
+      }
+    }
+
+    const bool final_pull_tripod_a = !last_pull_tripod_a;
+    if (!run_phase(final_pull_tripod_a, 1, "final half-step", true)) return false;
+
+    for (std::size_t i = 0; i < phase_end_times.size(); ++i) {
+      RCLCPP_INFO(this->get_logger(), "Phase %zu end master time: %.3f", i + 1, phase_end_times[i]);
+    }
     return true;
   }
 
