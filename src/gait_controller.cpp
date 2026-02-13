@@ -25,7 +25,7 @@ double discrete_step = 0.01;
 double min_angle = 1.0;
 double limit_radius = 0.05;
 double swing_height = 0.02;
-int num_steps = 2;
+int num_steps = 30;
 double g_master_path_time = 0.0;
 std::array<std::vector<Point3D>, 6> g_3d_path;
 
@@ -99,9 +99,9 @@ private:
 
   BasePose2D master_path(double t, int trajectory_id) const
   {
-    constexpr double straight_speed = 0.2;                  // m/s (+Y)
+    constexpr double straight_speed = 0.4;                  // m/s (+Y)
     constexpr double diag_speed_x = 0.15, diag_speed_y = 0.20; // m/s
-    constexpr double angular_speed = 15.0 * kPi / 180.0;    // rad/s
+    constexpr double angular_speed = 60.0 * kPi / 180.0;    // rad/s
     constexpr double external_orbit_r = 0.30;               // m
     constexpr double external_orbit_w = 60.0 * kPi / 180.0; // rad/s
 
@@ -115,6 +115,10 @@ private:
         pose.y = external_orbit_r * std::sin(external_orbit_w * t);
         pose.theta = external_orbit_w * t;
         break;
+      case 4:
+        pose.y = straight_speed * t;
+        pose.theta = angular_speed * t;
+        break;
       default: pose.y = straight_speed * t; break;
     }
     return pose;
@@ -127,6 +131,7 @@ private:
       case 1: return "diagonal +X/+Y";
       case 2: return "in-place rotation";
       case 3: return "external-center orbit";
+      case 4: return "rotate +Y";
       default: return "unknown(default straight +Y)";
     }
   }
@@ -591,7 +596,7 @@ private:
 
   static constexpr std::array<std::size_t, 3> kTripodA = {0, 2, 4};  // legs 1,3,5
   static constexpr std::array<std::size_t, 3> kTripodB = {1, 3, 5};  // legs 2,4,6
-  static constexpr int kStraightTrajectoryId = 0;
+  static constexpr int kStraightTrajectoryId = 4;
 
   static constexpr double kPi = 3.14159265358979323846;
   static constexpr double kXHome = 0.110;
