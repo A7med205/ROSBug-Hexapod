@@ -190,6 +190,7 @@ private:
 
   bool build_paths_from_master(int trajectory_id)
   {
+    constexpr std::array<std::size_t, 3> tripod_a = {0, 2, 4};  // legs 1,3,5
     for (auto & path : g_3d_path) { path.clear(); path.reserve(2048); }
     for (std::size_t i = 0; i < legs_.size(); ++i) {
       path_tip_state_[i] = {kXHome, kYHome, kZHome};
@@ -205,7 +206,7 @@ private:
       const BasePose2D base_curr = master_path(t, trajectory_id);
       int first_leg_over_limit = -1;
 
-      for (std::size_t leg_idx = 0; leg_idx < legs_.size(); ++leg_idx) {
+      for (const auto leg_idx : tripod_a) {
         const auto delta = base_to_tip(base_prev, base_curr, legs_[leg_idx].leg_id);
         auto & tip = path_tip_state_[leg_idx];
         tip.x += delta.dx_local;
@@ -236,15 +237,17 @@ private:
 
   bool execute_current_paths()
   {
-    if (g_3d_path[0].empty()) {
-      RCLCPP_ERROR(this->get_logger(), "Cannot execute empty paths");
+    constexpr std::array<std::size_t, 3> tripod_a = {0, 2, 4};  // legs 1,3,5
+    constexpr std::array<std::size_t, 3> tripod_b = {1, 3, 5};  // legs 2,4,6
+    if (g_3d_path[tripod_a[0]].empty()) {
+      RCLCPP_ERROR(this->get_logger(), "Cannot execute empty tripod A path");
       return false;
     }
 
-    const std::size_t points_per_leg = g_3d_path[0].size();
-    for (std::size_t i = 1; i < g_3d_path.size(); ++i) {
-      if (g_3d_path[i].size() != points_per_leg) {
-        RCLCPP_ERROR(this->get_logger(), "Path size mismatch across legs");
+    const std::size_t points_per_leg = g_3d_path[tripod_a[0]].size();
+    for (const auto leg_idx : tripod_a) {
+      if (g_3d_path[leg_idx].size() != points_per_leg) {
+        RCLCPP_ERROR(this->get_logger(), "Tripod A path size mismatch");
         return false;
       }
     }
@@ -252,6 +255,11 @@ private:
     const double min_angle_rad = min_angle * (kPi / 180.0);
     std::array<std::array<double, 3>, 6> candidate_joint_angles{};
     for (std::size_t leg_idx = 0; leg_idx < legs_.size(); ++leg_idx) candidate_joint_angles[leg_idx] = legs_[leg_idx].current_joint_angles;
+    for (const auto leg_idx : tripod_b) {
+      double j1 = 0.0, j2 = 0.0, j3 = 0.0;
+      compute_ik({kXHome, kYHome, kZHome}, j1, j2, j3);
+      candidate_joint_angles[leg_idx] = {j1, j2, j3};
+    }
 
     joints_trajectory.joint_names.clear();
     joints_trajectory.points.clear();
@@ -262,7 +270,7 @@ private:
     }
 
     for (std::size_t point_idx = 0; point_idx < points_per_leg; ++point_idx) {
-      for (std::size_t leg_idx = 0; leg_idx < legs_.size(); ++leg_idx) {
+      for (const auto leg_idx : tripod_a) {
         const auto & target_tip = g_3d_path[leg_idx][point_idx];
         double j1 = 0.0, j2 = 0.0, j3 = 0.0;
         compute_ik(target_tip, j1, j2, j3);
@@ -303,7 +311,8 @@ private:
     }
 
     for (std::size_t leg_idx = 0; leg_idx < legs_.size(); ++leg_idx) legs_[leg_idx].current_joint_angles = candidate_joint_angles[leg_idx];
-    for (std::size_t leg_idx = 0; leg_idx < legs_.size(); ++leg_idx) legs_[leg_idx].current_tip_position = g_3d_path[leg_idx].back();
+    for (const auto leg_idx : tripod_a) legs_[leg_idx].current_tip_position = g_3d_path[leg_idx].back();
+    for (const auto leg_idx : tripod_b) legs_[leg_idx].current_tip_position = {kXHome, kYHome, kZHome};
 
     RCLCPP_INFO(this->get_logger(), "Path execution complete. joints_trajectory points=%zu", joints_trajectory.points.size());
     return true;
