@@ -13,8 +13,10 @@ class MasterPath
 public:
   explicit MasterPath(const GaitConfig & config);
 
-  BasePose2D pose(double t, int trajectory_id) const;
-  std::string name(int trajectory_id) const;
+  // Returns base pose in world frame at time t for a selected trajectory family.
+  BasePose2D pose(double t, TrajectoryType trajectory_type) const;
+  // Human-readable label for logging and status output.
+  std::string name(TrajectoryType trajectory_type) const;
 
 private:
   const GaitConfig & config_;

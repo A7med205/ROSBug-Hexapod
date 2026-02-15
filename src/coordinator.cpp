@@ -1,7 +1,6 @@
 #include "hexapod_sim/coordinator.hpp"
 
 #include <string>
-#include <vector>
 
 #include "hexapod_sim/gait_config.hpp"
 #include "hexapod_sim/kinematics.hpp"
@@ -13,17 +12,16 @@ GaitCoordinator::GaitCoordinator(
   rclcpp::Node & node,
   const GaitConfig & config,
   GaitState & state,
-  const MasterPath & master_path,
   PathBuilder & path_builder,
   TrajectoryExecutor & executor)
 : node_(node),
   config_(config),
   state_(state),
-  master_path_(master_path),
   path_builder_(path_builder),
   executor_(executor)
 {}
 
+// Initializes current joint angles from neutral tip targets for all legs.
 bool GaitCoordinator::initialize_neutral_joint_values()
 {
   for (auto & leg : state_.legs) {
@@ -35,47 +33,46 @@ bool GaitCoordinator::initialize_neutral_joint_values()
   return true;
 }
 
+// Runs: first half-step, full-step sequence, and final half-step.
 bool GaitCoordinator::run()
 {
   if (!initialize_neutral_joint_values()) return false;
 
   state_.master_path_time = 0.0;
-  std::vector<double> phase_end_times;
-  phase_end_times.reserve(static_cast<std::size_t>(config_.num_steps) + 2);
-  bool last_pull_tripod_a = true;
+  Tripod last_pull_tripod = Tripod::A;
 
-  auto run_phase = [&](bool pull_tripod_a, int pull_limit_hits_required, const std::string & phase_label, bool end_swing_to_neutral) -> bool {
-    const bool swing_tripod_a = !pull_tripod_a;
+  auto run_phase = [&](Tripod pull_tripod, PullPhaseSpan pull_phase_span, const std::string & phase_label, bool end_swing_to_neutral) -> bool {
+    const Tripod swing_tripod = opposite_tripod(pull_tripod);
+    const int peak_tip_limit_hits_target = required_peak_tip_limit_hits(pull_phase_span);
     const double pull_start_time = state_.master_path_time;
     double pull_end_time = pull_start_time;
     std::size_t pull_point_count = 0;
 
     RCLCPP_INFO(
       node_.get_logger(),
-      "gait_coordinator: %s | pull tripod %c | limit hits=%d",
+      "[coordinator] %s | pull tripod=%c | peak_hits=%d",
       phase_label.c_str(),
-      pull_tripod_a ? 'A' : 'B',
-      pull_limit_hits_required);
+      tripod_label(pull_tripod),
+      peak_tip_limit_hits_target);
 
     if (!path_builder_.build_pulls(
-          pull_tripod_a,
+          pull_tripod,
           pull_start_time,
-          config_.trajectory_id,
-          pull_limit_hits_required,
+          config_.trajectory_type,
+          pull_phase_span,
           pull_end_time,
           pull_point_count))
     {
       return false;
     }
 
-    const double pull_duration = pull_end_time - pull_start_time;
     if (!path_builder_.build_swings(
-          swing_tripod_a,
+          swing_tripod,
           pull_end_time,
-          pull_duration,
+          pull_end_time - pull_start_time,
           pull_point_count,
           end_swing_to_neutral,
-          config_.trajectory_id))
+          config_.trajectory_type))
     {
       return false;
     }
@@ -84,21 +81,18 @@ bool GaitCoordinator::run()
     }
 
     state_.master_path_time = pull_end_time;
-    last_pull_tripod_a = pull_tripod_a;
-    phase_end_times.push_back(state_.master_path_time);
-    RCLCPP_INFO(node_.get_logger(), "gait_coordinator phase complete: %s at t=%.6f", phase_label.c_str(), pull_end_time);
+    last_pull_tripod = pull_tripod;
+    RCLCPP_INFO(node_.get_logger(), "[coordinator] %s complete at t=%.6f", phase_label.c_str(), pull_end_time);
     return true;
   };
 
-  if (!run_phase(true, 1, "first half-step", false)) {
-    return false;
-  }
+  if (!run_phase(Tripod::A, PullPhaseSpan::HalfStep, "first half-step", false)) return false;
 
   for (int full_step = 0; full_step < config_.num_steps; ++full_step) {
-    const bool pull_tripod_a = (full_step % 2 == 1);
+    const Tripod pull_tripod = (full_step % 2 == 1) ? Tripod::A : Tripod::B;
     if (!run_phase(
-          pull_tripod_a,
-          2,
+          pull_tripod,
+          PullPhaseSpan::FullStep,
           "full step " + std::to_string(full_step + 1),
           false))
     {
@@ -106,15 +100,7 @@ bool GaitCoordinator::run()
     }
   }
 
-  const bool final_pull_tripod_a = !last_pull_tripod_a;
-  if (!run_phase(final_pull_tripod_a, 1, "final half-step", true)) {
-    return false;
-  }
-
-  for (std::size_t i = 0; i < phase_end_times.size(); ++i) {
-    RCLCPP_INFO(node_.get_logger(), "Phase %zu end master time: %.3f", i + 1, phase_end_times[i]);
-  }
-  return true;
+  return run_phase(opposite_tripod(last_pull_tripod), PullPhaseSpan::HalfStep, "final half-step", true);
 }
 
 }  // namespace hexapod_sim

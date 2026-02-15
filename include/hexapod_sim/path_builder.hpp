@@ -15,33 +15,38 @@ namespace hexapod_sim
 class PathBuilder
 {
 public:
+  // Builds stance/swing tip paths in local leg frames from base motion.
   PathBuilder(
     const GaitConfig & config,
     GaitState & state,
     const MasterPath & master_path,
     const rclcpp::Logger & logger);
 
+  // Builds pull trajectories for one tripod until the required hit count is met.
   bool build_pulls(
-    bool tripod_a,
+    Tripod pull_tripod,
     double start_time,
-    int trajectory_id,
-    int limit_hits_required,
+    TrajectoryType trajectory_type,
+    PullPhaseSpan pull_phase_span,
     double & end_time,
     std::size_t & point_count);
 
+  // Builds swing trajectories for one tripod with optional neutral landing.
   bool build_swings(
-    bool tripod_a,
+    Tripod swing_tripod,
     double start_time,
     double pull_duration,
     std::size_t point_count,
     bool end_to_neutral,
-    int trajectory_id);
+    TrajectoryType trajectory_type);
 
 private:
-  const std::array<std::size_t, 3> & tripod_indices(bool tripod_a) const;
-  LocalDisplacement2D base_to_tip(const BasePose2D & base1, const BasePose2D & base2, int leg_id);
-  WorldNeutralPose wbase_to_wneutral(double t, int leg_id, int trajectory_id);
-  std::array<LocalPose2D, 3> future_tip_poses(bool tripod_a, double start_time, int trajectory_id);
+  // Converts base motion into local tip displacement for a stance-locked foot.
+  LocalDisplacement2D tip_delta(const BasePose2D & base1, const BasePose2D & base2, int leg_id);
+  // Returns world-frame neutral tip pose (x,y,theta) for a leg at time t.
+  WorldNeutralPose neutral_tip_delta(double t, int leg_id, TrajectoryType trajectory_type);
+  // Predicts swing landing offsets in local frame for the selected tripod.
+  std::array<LocalPose2D, 3> tip_landing_pose(Tripod tripod, double start_time, TrajectoryType trajectory_type);
 
   const GaitConfig & config_;
   GaitState & state_;

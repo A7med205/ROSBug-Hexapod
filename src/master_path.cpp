@@ -11,26 +11,27 @@ MasterPath::MasterPath(const GaitConfig & config)
 : config_(config)
 {}
 
-BasePose2D MasterPath::pose(double t, int trajectory_id) const
+// Returns base world pose for the selected trajectory at time t.
+BasePose2D MasterPath::pose(double t, TrajectoryType trajectory_type) const
 {
   (void)config_;
-  constexpr double straight_speed = 0.4;
+  constexpr double straight_speed = 0.8;
   constexpr double diag_speed_x = 0.15, diag_speed_y = 0.20;
   constexpr double angular_speed = 60.0 * kPi / 180.0;
   constexpr double external_orbit_r = 0.30;
   constexpr double external_orbit_w = 60.0 * kPi / 180.0;
 
   BasePose2D pose{0.0, 0.0, 0.0};
-  switch (trajectory_id) {
-    case 0: pose.y = straight_speed * t; break;
-    case 1: pose.x = diag_speed_x * t; pose.y = diag_speed_y * t; break;
-    case 2: pose.theta = angular_speed * t; break;
-    case 3:
+  switch (trajectory_type) {
+    case TrajectoryType::StraightY: pose.y = straight_speed * t; break;
+    case TrajectoryType::DiagonalXY: pose.x = diag_speed_x * t; pose.y = diag_speed_y * t; break;
+    case TrajectoryType::InPlaceRotation: pose.theta = angular_speed * t; break;
+    case TrajectoryType::ExternalCenterOrbit:
       pose.x = external_orbit_r * (std::cos(external_orbit_w * t) - 1.0);
       pose.y = external_orbit_r * std::sin(external_orbit_w * t);
       pose.theta = external_orbit_w * t;
       break;
-    case 4:
+    case TrajectoryType::RotateAndTranslateY:
       pose.y = straight_speed * t;
       pose.theta = angular_speed * t;
       break;
@@ -39,14 +40,15 @@ BasePose2D MasterPath::pose(double t, int trajectory_id) const
   return pose;
 }
 
-std::string MasterPath::name(int trajectory_id) const
+// Returns a compact name used in status logs.
+std::string MasterPath::name(TrajectoryType trajectory_type) const
 {
-  switch (trajectory_id) {
-    case 0: return "straight +Y";
-    case 1: return "diagonal +X/+Y";
-    case 2: return "in-place rotation";
-    case 3: return "external-center orbit";
-    case 4: return "rotate +Y";
+  switch (trajectory_type) {
+    case TrajectoryType::StraightY: return "straight +Y";
+    case TrajectoryType::DiagonalXY: return "diagonal +X/+Y";
+    case TrajectoryType::InPlaceRotation: return "in-place rotation";
+    case TrajectoryType::ExternalCenterOrbit: return "external-center orbit";
+    case TrajectoryType::RotateAndTranslateY: return "rotate +Y";
     default: return "unknown(default straight +Y)";
   }
 }

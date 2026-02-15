@@ -26,6 +26,7 @@ void Kinematics::compute_ik(
   const rclcpp::Logger & logger,
   rclcpp::Clock & clock)
 {
+  // Solves 3-DOF leg IK in the local leg frame (x right, y forward, z up).
   const double y = tip.y, x = tip.x, z = tip.z;
   j1 = -std::atan2(y, x);
 

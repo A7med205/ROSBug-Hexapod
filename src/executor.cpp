@@ -17,22 +17,24 @@ TrajectoryExecutor::TrajectoryExecutor(rclcpp::Node & node, const GaitConfig & c
   action_client_ = rclcpp_action::create_client<FollowJointTrajectory>(&node_, config_.action_name);
 }
 
+// Waits for the joint trajectory action server.
 bool TrajectoryExecutor::wait_for_action_server(const std::chrono::milliseconds & timeout)
 {
   return action_client_->wait_for_action_server(timeout);
 }
 
+// Converts local tip paths to filtered joint goals and sends a single trajectory.
 bool TrajectoryExecutor::execute_current_paths()
 {
   if (state_.path_3d[0].empty()) {
-    RCLCPP_ERROR(node_.get_logger(), "Cannot execute empty path set");
+    RCLCPP_ERROR(node_.get_logger(), "[executor] cannot execute empty path set");
     return false;
   }
 
   const std::size_t points_per_leg = state_.path_3d[0].size();
   for (std::size_t i = 1; i < state_.path_3d.size(); ++i) {
     if (state_.path_3d[i].size() != points_per_leg) {
-      RCLCPP_ERROR(node_.get_logger(), "Path size mismatch across legs");
+      RCLCPP_ERROR(node_.get_logger(), "[executor] path size mismatch across legs");
       return false;
     }
   }
@@ -91,10 +93,7 @@ bool TrajectoryExecutor::execute_current_paths()
   }
 
   if (!state_.joints_trajectory.points.empty()) {
-    RCLCPP_INFO(
-      node_.get_logger(),
-      "Built joints_trajectory with %zu points, sending once to action server",
-      state_.joints_trajectory.points.size());
+    RCLCPP_INFO(node_.get_logger(), "[executor] sending trajectory points=%zu", state_.joints_trajectory.points.size());
     if (!send_joints_trajectory()) {
       return false;
     }
@@ -105,13 +104,10 @@ bool TrajectoryExecutor::execute_current_paths()
     state_.legs[leg_idx].current_tip_position = state_.path_3d[leg_idx].back();
   }
 
-  RCLCPP_INFO(
-    node_.get_logger(),
-    "Path execution complete. joints_trajectory points=%zu",
-    state_.joints_trajectory.points.size());
   return true;
 }
 
+// Sends the prebuilt joints trajectory and waits for completion.
 bool TrajectoryExecutor::send_joints_trajectory()
 {
   if (state_.joints_trajectory.points.empty()) {
@@ -124,20 +120,20 @@ bool TrajectoryExecutor::send_joints_trajectory()
   auto goal_handle_future = action_client_->async_send_goal(goal_msg);
   const auto send_status = rclcpp::spin_until_future_complete(node_.get_node_base_interface(), goal_handle_future);
   if (send_status != rclcpp::FutureReturnCode::SUCCESS) {
-    RCLCPP_ERROR(node_.get_logger(), "Failed to send goal to action server");
+    RCLCPP_ERROR(node_.get_logger(), "[executor] failed to send goal to action server");
     return false;
   }
 
   auto goal_handle = goal_handle_future.get();
   if (!goal_handle) {
-    RCLCPP_ERROR(node_.get_logger(), "Action server rejected trajectory goal");
+    RCLCPP_ERROR(node_.get_logger(), "[executor] action server rejected trajectory goal");
     return false;
   }
 
   auto result_future = action_client_->async_get_result(goal_handle);
   const auto result_status = rclcpp::spin_until_future_complete(node_.get_node_base_interface(), result_future);
   if (result_status != rclcpp::FutureReturnCode::SUCCESS) {
-    RCLCPP_ERROR(node_.get_logger(), "Failed while waiting for action result");
+    RCLCPP_ERROR(node_.get_logger(), "[executor] failed while waiting for action result");
     return false;
   }
 
@@ -145,7 +141,7 @@ bool TrajectoryExecutor::send_joints_trajectory()
   if (wrapped_result.code != rclcpp_action::ResultCode::SUCCEEDED) {
     RCLCPP_ERROR(
       node_.get_logger(),
-      "Trajectory action failed with result code %d",
+      "[executor] trajectory action failed with result code %d",
       static_cast<int>(wrapped_result.code));
     return false;
   }
