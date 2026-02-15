@@ -22,15 +22,32 @@ install(DIRECTORY
   DESTINATION share/${PROJECT_NAME}/
 )
 
-add_executable(gait_controller src/gait_controller.cpp)
+add_library(hexapod_gait_core
+  src/gait_state.cpp
+  src/master_path.cpp
+  src/kinematics.cpp
+  src/path_builder.cpp
+  src/executor.cpp
+  src/coordinator.cpp
+)
+target_include_directories(hexapod_gait_core PUBLIC include)
 
-ament_target_dependencies(gait_controller
+ament_target_dependencies(hexapod_gait_core
   control_msgs
   rclcpp
   rclcpp_action
   trajectory_msgs
 )
 
+add_executable(gait_controller
+  src/gait_controller_node.cpp
+  src/main.cpp
+)
+target_include_directories(gait_controller PUBLIC include)
+target_link_libraries(gait_controller hexapod_gait_core)
+ament_target_dependencies(gait_controller
+  rclcpp
+)
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
@@ -38,9 +55,15 @@ if(BUILD_TESTING)
   ament_lint_auto_find_test_dependencies()
 endif()
 
+install(
+  DIRECTORY include/
+  DESTINATION include
+)
+
 ## Install
 install(
   TARGETS
+    hexapod_gait_core
     gait_controller
   DESTINATION
     lib/${PROJECT_NAME}
