@@ -6,6 +6,8 @@
 
 #include <trajectory_msgs/msg/joint_trajectory.hpp>
 
+#include "hexapod_sim/gait_config.hpp"
+
 namespace hexapod_sim
 {
 
@@ -33,6 +35,9 @@ struct GaitState
   std::array<Point3D, 6> path_tip_state;
   std::vector<Leg> legs;
   trajectory_msgs::msg::JointTrajectory joints_trajectory;
+  TrajectoryType current_trajectory_type{TrajectoryType::Stationary};
+  TrajectoryType requested_trajectory_type{TrajectoryType::Stationary};
+  bool stop_requested{false};
 };
 
 std::vector<Leg> create_default_legs();

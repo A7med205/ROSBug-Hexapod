@@ -1,6 +1,8 @@
 #include "hexapod_sim/coordinator.hpp"
 
+#include <chrono>
 #include <string>
+#include <thread>
 
 #include "hexapod_sim/gait_config.hpp"
 #include "hexapod_sim/kinematics.hpp"
@@ -33,74 +35,85 @@ bool GaitCoordinator::initialize_neutral_joint_values()
   return true;
 }
 
-// Runs: first half-step, full-step sequence, and final half-step.
+// Runs continuously: idle in stationary, then first half-step and continuous full-steps while moving.
 bool GaitCoordinator::run()
 {
+  using namespace std::chrono_literals;
   if (!initialize_neutral_joint_values()) return false;
 
   state_.master_path_time = 0.0;
-  Tripod last_pull_tripod = Tripod::A;
 
-  auto run_phase = [&](Tripod pull_tripod, PullPhaseSpan pull_phase_span, const std::string & phase_label, bool end_swing_to_neutral) -> bool {
-    const Tripod swing_tripod = opposite_tripod(pull_tripod);
-    const int peak_tip_limit_hits_target = required_peak_tip_limit_hits(pull_phase_span);
-    const double pull_start_time = state_.master_path_time;
-    double pull_end_time = pull_start_time;
+  auto run_phase = [&](Tripod pull_tripod, PullPhaseSpan pull_phase_span, const char * phase_label, bool end_swing_to_neutral) -> bool {
+    double pull_end_time = state_.master_path_time;
     std::size_t pull_point_count = 0;
-
-    RCLCPP_INFO(
-      node_.get_logger(),
-      "[coordinator] %s | pull tripod=%c | peak_hits=%d",
-      phase_label.c_str(),
-      tripod_label(pull_tripod),
-      peak_tip_limit_hits_target);
 
     if (!path_builder_.build_pulls(
           pull_tripod,
-          pull_start_time,
-          config_.trajectory_type,
+          state_.master_path_time,
+          state_.current_trajectory_type,
           pull_phase_span,
           pull_end_time,
           pull_point_count))
     {
+      RCLCPP_ERROR(node_.get_logger(), "[coordinator] build_pulls failed in %s", phase_label);
       return false;
     }
 
     if (!path_builder_.build_swings(
-          swing_tripod,
+          opposite_tripod(pull_tripod),
           pull_end_time,
-          pull_end_time - pull_start_time,
+          pull_end_time - state_.master_path_time,
           pull_point_count,
           end_swing_to_neutral,
-          config_.trajectory_type))
+          state_.current_trajectory_type))
     {
+      RCLCPP_ERROR(node_.get_logger(), "[coordinator] build_swings failed in %s", phase_label);
       return false;
     }
+
     if (!executor_.execute_current_paths()) {
+      RCLCPP_ERROR(node_.get_logger(), "[coordinator] execute_current_paths failed in %s", phase_label);
       return false;
     }
 
     state_.master_path_time = pull_end_time;
-    last_pull_tripod = pull_tripod;
-    RCLCPP_INFO(node_.get_logger(), "[coordinator] %s complete at t=%.6f", phase_label.c_str(), pull_end_time);
     return true;
   };
 
-  if (!run_phase(Tripod::A, PullPhaseSpan::HalfStep, "first half-step", false)) return false;
+  while (rclcpp::ok()) {
+    rclcpp::spin_some(node_.get_node_base_interface());
 
-  for (int full_step = 0; full_step < config_.num_steps; ++full_step) {
-    const Tripod pull_tripod = (full_step % 2 == 1) ? Tripod::A : Tripod::B;
-    if (!run_phase(
-          pull_tripod,
-          PullPhaseSpan::FullStep,
-          "full step " + std::to_string(full_step + 1),
-          false))
-    {
-      return false;
+    if (state_.current_trajectory_type == TrajectoryType::Stationary) {
+      if (state_.requested_trajectory_type == TrajectoryType::Stationary) {
+        std::this_thread::sleep_for(50ms);
+        continue;
+      }
+
+      state_.current_trajectory_type = state_.requested_trajectory_type;
+      state_.stop_requested = false;
+      RCLCPP_INFO(node_.get_logger(), "[coordinator] leaving stationary with trajectory=%d", trajectory_type_id(state_.current_trajectory_type));
+
+      if (!run_phase(Tripod::A, PullPhaseSpan::HalfStep, "first half-step", false)) return false;
+
+      Tripod next_full_pull_tripod = Tripod::B;
+      while (rclcpp::ok() && state_.current_trajectory_type != TrajectoryType::Stationary) {
+        // If stationary was requested at a pull-hit boundary, skip full-step and close with final half-step.
+        if (state_.stop_requested) {
+          if (!run_phase(next_full_pull_tripod, PullPhaseSpan::HalfStep, "final half-step", true)) return false;
+          state_.current_trajectory_type = TrajectoryType::Stationary;
+          state_.requested_trajectory_type = TrajectoryType::Stationary;
+          state_.stop_requested = false;
+          RCLCPP_INFO(node_.get_logger(), "[coordinator] entered stationary mode");
+          break;
+        }
+
+        if (!run_phase(next_full_pull_tripod, PullPhaseSpan::FullStep, "full-step", false)) return false;
+        next_full_pull_tripod = opposite_tripod(next_full_pull_tripod);
+      }
     }
   }
 
-  return run_phase(opposite_tripod(last_pull_tripod), PullPhaseSpan::HalfStep, "final half-step", true);
+  return true;
 }
 
 }  // namespace hexapod_sim

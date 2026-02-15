@@ -20,6 +20,8 @@ public:
 
 private:
   const GaitConfig & config_;
+  mutable TrajectoryType active_trajectory_type_{TrajectoryType::Stationary};
+  mutable double trajectory_start_global_time_{0.0};
 };
 
 }  // namespace hexapod_sim

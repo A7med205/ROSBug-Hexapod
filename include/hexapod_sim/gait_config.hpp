@@ -13,7 +13,8 @@ enum class TrajectoryType : int
   DiagonalXY = 1,
   InPlaceRotation = 2,
   ExternalCenterOrbit = 3,
-  RotateAndTranslateY = 4
+  RotateAndTranslateY = 4,
+  Stationary = 5
 };
 
 enum class Tripod
@@ -51,7 +52,8 @@ inline constexpr TrajectoryType trajectory_type_from_id(int id)
     case 2: return TrajectoryType::InPlaceRotation;
     case 3: return TrajectoryType::ExternalCenterOrbit;
     case 4: return TrajectoryType::RotateAndTranslateY;
-    default: return TrajectoryType::StraightY;
+    case 5: return TrajectoryType::Stationary;
+    default: return TrajectoryType::Stationary;
   }
 }
 
@@ -61,9 +63,9 @@ struct GaitConfig
   double min_angle_deg{1.0};
   double limit_radius{0.05};
   double swing_height{0.02};
-  int num_steps{30};
-  TrajectoryType trajectory_type{TrajectoryType::RotateAndTranslateY};
+  TrajectoryType trajectory_type{TrajectoryType::Stationary};
   std::string action_name{"/joint_trajectory_controller/follow_joint_trajectory"};
+  std::string trajectory_cmd_topic{"/trajectory_type"};
 };
 
 }  // namespace hexapod_sim

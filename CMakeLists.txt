@@ -47,6 +47,7 @@ target_include_directories(gait_controller PUBLIC include)
 target_link_libraries(gait_controller hexapod_gait_core)
 ament_target_dependencies(gait_controller
   rclcpp
+  std_msgs
 )
 
 if(BUILD_TESTING)
@@ -65,6 +66,13 @@ install(
   TARGETS
     hexapod_gait_core
     gait_controller
+  DESTINATION
+    lib/${PROJECT_NAME}
+)
+
+install(
+  PROGRAMS
+    scripts/trajectory_type_keyboard.py
   DESTINATION
     lib/${PROJECT_NAME}
 )

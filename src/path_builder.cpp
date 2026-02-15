@@ -8,18 +8,18 @@ namespace hexapod_sim
 {
 
 PathBuilder::PathBuilder(
+  rclcpp::Node & node,
   const GaitConfig & config,
   GaitState & state,
-  const MasterPath & master_path,
-  const rclcpp::Logger & logger)
-: config_(config), state_(state), master_path_(master_path), logger_(logger)
+  const MasterPath & master_path)
+: config_(config), state_(state), master_path_(master_path), node_(node)
 {}
 
 // Converts base motion into local tip displacement for a stance-locked foot.
 LocalDisplacement2D PathBuilder::tip_delta(const BasePose2D & base1, const BasePose2D & base2, int leg_id)
 {
   if (leg_id < 1 || leg_id > static_cast<int>(state_.legs.size())) {
-    RCLCPP_ERROR(logger_, "[path_builder] invalid leg_id=%d in tip_delta", leg_id);
+    RCLCPP_ERROR(node_.get_logger(), "[path_builder] invalid leg_id=%d in tip_delta", leg_id);
     return {0.0, 0.0};
   }
 
@@ -52,7 +52,7 @@ LocalDisplacement2D PathBuilder::tip_delta(const BasePose2D & base1, const BaseP
 WorldNeutralPose PathBuilder::neutral_tip_delta(double t, int leg_id, TrajectoryType trajectory_type)
 {
   if (leg_id < 1 || leg_id > static_cast<int>(state_.legs.size())) {
-    RCLCPP_ERROR(logger_, "[path_builder] invalid leg_id=%d in neutral_tip_delta", leg_id);
+    RCLCPP_ERROR(node_.get_logger(), "[path_builder] invalid leg_id=%d in neutral_tip_delta", leg_id);
     return {0.0, 0.0, 0.0};
   }
 
@@ -97,7 +97,7 @@ std::array<LocalPose2D, 3> PathBuilder::tip_landing_pose(Tripod tripod, double s
     if (reached) break;
   }
 
-  if (!reached) RCLCPP_WARN(logger_, "[path_builder] tip_landing_pose reached max iterations before limit_radius");
+  if (!reached) RCLCPP_WARN(node_.get_logger(), "[path_builder] tip_landing_pose reached max iterations before limit_radius");
 
   for (std::size_t i = 0; i < tripod_legs_idx.size(); ++i) {
     const double dx_world = end_world[i].x - start_world[i].x;
@@ -133,15 +133,17 @@ bool PathBuilder::build_pulls(
     radius_origin_xy[i] = {state_.path_tip_state[tripod_legs_idx[i]].x, state_.path_tip_state[tripod_legs_idx[i]].y};
   }
 
-  BasePose2D base_prev = master_path_.pose(start_time, trajectory_type);
+  TrajectoryType active_trajectory_type = trajectory_type;
+  BasePose2D base_prev = master_path_.pose(start_time, active_trajectory_type);
   constexpr std::size_t max_path_steps = 10000;
   int peak_tip_limit_hits = 0;
   double t = start_time;
 
   for (std::size_t step_idx = 1; step_idx <= max_path_steps; ++step_idx) {
     (void)step_idx;
+    rclcpp::spin_some(node_.get_node_base_interface());
     t += config_.discrete_step;
-    const BasePose2D base_curr = master_path_.pose(t, trajectory_type);
+    const BasePose2D base_curr = master_path_.pose(t, active_trajectory_type);
     bool any_tip_hit_limit = false;
 
     for (std::size_t i = 0; i < tripod_legs_idx.size(); ++i) {
@@ -161,6 +163,21 @@ bool PathBuilder::build_pulls(
     base_prev = base_curr;
     if (any_tip_hit_limit) {
       ++peak_tip_limit_hits;
+
+      const auto requested = state_.requested_trajectory_type;
+      if (requested != state_.current_trajectory_type) {
+        if (requested == TrajectoryType::Stationary) {
+          if (!state_.stop_requested) RCLCPP_INFO(node_.get_logger(), "[path_builder] stationary requested; scheduling final half-step");
+          state_.stop_requested = true;
+        } else {
+          state_.current_trajectory_type = requested;
+          active_trajectory_type = requested;
+          state_.stop_requested = false;
+          base_prev = master_path_.pose(t, active_trajectory_type);
+          RCLCPP_INFO(node_.get_logger(), "[path_builder] trajectory switched at hit to %s (%d)", master_path_.name(requested).c_str(), trajectory_type_id(requested));
+        }
+      }
+
       if (peak_tip_limit_hits >= peak_tip_limit_hits_target) {
         end_time = t;
         point_count = state_.path_3d[tripod_legs_idx[0]].size();
@@ -176,7 +193,7 @@ bool PathBuilder::build_pulls(
   }
 
   RCLCPP_WARN(
-    logger_,
+    node_.get_logger(),
     "[path_builder] build_pulls reached max steps before %d required radius hits",
     peak_tip_limit_hits_target);
   return false;

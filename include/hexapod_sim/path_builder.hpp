@@ -17,10 +17,10 @@ class PathBuilder
 public:
   // Builds stance/swing tip paths in local leg frames from base motion.
   PathBuilder(
+    rclcpp::Node & node,
     const GaitConfig & config,
     GaitState & state,
-    const MasterPath & master_path,
-    const rclcpp::Logger & logger);
+    const MasterPath & master_path);
 
   // Builds pull trajectories for one tripod until the required hit count is met.
   bool build_pulls(
@@ -51,7 +51,7 @@ private:
   const GaitConfig & config_;
   GaitState & state_;
   const MasterPath & master_path_;
-  rclcpp::Logger logger_;
+  rclcpp::Node & node_;
 };
 
 }  // namespace hexapod_sim
