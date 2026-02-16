@@ -74,7 +74,7 @@ install(
   PROGRAMS
     scripts/trajectory_type_keyboard.py
     scripts/joint_goal_sequence_sender.py
-    scripts/tripod_gait_templates_node.py
+    scripts/lite_gait_controller.py
   DESTINATION
     lib/${PROJECT_NAME}
 )
