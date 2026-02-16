@@ -11,6 +11,7 @@ find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(trajectory_msgs REQUIRED)
 
 install(DIRECTORY
   launch
@@ -21,19 +22,32 @@ install(DIRECTORY
   DESTINATION share/${PROJECT_NAME}/
 )
 
-add_executable(gait_controller src/gait_controller.cpp)
-add_executable(gait_controller_r src/gait_controller_r.cpp)
+add_library(hexapod_gait_core
+  src/gait_state.cpp
+  src/master_path.cpp
+  src/kinematics.cpp
+  src/path_builder.cpp
+  src/executor.cpp
+  src/coordinator.cpp
+)
+target_include_directories(hexapod_gait_core PUBLIC include)
 
-target_link_libraries(gait_controller PUBLIC
-  ${control_msgs_TARGETS}
-  rclcpp::rclcpp
-  rclcpp_action::rclcpp_action
+ament_target_dependencies(hexapod_gait_core
+  control_msgs
+  rclcpp
+  rclcpp_action
+  trajectory_msgs
 )
 
-target_link_libraries(gait_controller_r PUBLIC
-  ${control_msgs_TARGETS}
-  rclcpp::rclcpp
-  rclcpp_action::rclcpp_action
+add_executable(gait_controller
+  src/gait_controller_node.cpp
+  src/main.cpp
+)
+target_include_directories(gait_controller PUBLIC include)
+target_link_libraries(gait_controller hexapod_gait_core)
+ament_target_dependencies(gait_controller
+  rclcpp
+  std_msgs
 )
 
 if(BUILD_TESTING)
@@ -42,11 +56,25 @@ if(BUILD_TESTING)
   ament_lint_auto_find_test_dependencies()
 endif()
 
+install(
+  DIRECTORY include/
+  DESTINATION include
+)
+
 ## Install
 install(
   TARGETS
+    hexapod_gait_core
     gait_controller
-    gait_controller_r
+  DESTINATION
+    lib/${PROJECT_NAME}
+)
+
+install(
+  PROGRAMS
+    scripts/trajectory_type_keyboard.py
+    scripts/lite_gait_controller.py
+    scripts/elevation_pitch_keyboard_controller.py
   DESTINATION
     lib/${PROJECT_NAME}
 )

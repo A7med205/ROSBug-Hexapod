@@ -28,7 +28,7 @@
       <origin xyz="0 0 0.0385" rpy="0 0 0"/>
       <parent link="coxa${leg_id}"/>
       <child link="femur${leg_id}"/>
-      <limit effort="1000.0" lower="${-pi}" upper="${pi}" velocity="${pi/2}"/>
+      <limit effort="1000.0" lower="${-pi}" upper="${pi}" velocity="${2*pi}"/>
       <dynamics damping="0.0" friction="0.0"/>
     </joint>
 
@@ -57,7 +57,7 @@
       <origin xyz="0 0 0.070" rpy="0 0 0"/>
       <parent link="femur${leg_id}"/>
       <child link="tibia${leg_id}"/>
-      <limit effort="1000.0" lower="${-pi}" upper="${pi}" velocity="${pi/2}"/>
+      <limit effort="1000.0" lower="${-pi}" upper="${pi}" velocity="${2*pi}"/>
       <dynamics damping="0.0" friction="0.0"/>
     </joint>
 
