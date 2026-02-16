@@ -73,7 +73,6 @@ install(
 install(
   PROGRAMS
     scripts/trajectory_type_keyboard.py
-    scripts/joint_goal_sequence_sender.py
     scripts/lite_gait_controller.py
     scripts/elevation_pitch_keyboard_controller.py
   DESTINATION
