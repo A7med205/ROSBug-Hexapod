@@ -49,7 +49,7 @@
     <origin xyz="-0.09 -0.0535 -0.00075" rpy="${3*pi/4} ${pi/2} 0"/>
     <parent link="base"/>
     <child link="coxal1"/>
-    <limit effort="1000.0" lower="${-pi}" upper="${pi}" velocity="${pi/2}"/>
+    <limit effort="1000.0" lower="${-pi}" upper="${pi}" velocity="${2*pi}"/>
     <dynamics damping="0.0" friction="0.0"/>
   </joint>
 
@@ -58,7 +58,7 @@
     <origin xyz="0 -0.070 -0.00075" rpy="${pi/2} ${pi/2} 0"/>
     <parent link="base"/>
     <child link="coxal2"/>
-    <limit effort="1000.0" lower="${-pi}" upper="${pi}" velocity="${pi/2}"/>
+    <limit effort="1000.0" lower="${-pi}" upper="${pi}" velocity="${2*pi}"/>
     <dynamics damping="0.0" friction="0.0"/>
   </joint>
 
@@ -67,7 +67,7 @@
     <origin xyz="0.09 -0.0535 -0.00075" rpy="${pi/4} ${pi/2} 0"/>
     <parent link="base"/>
     <child link="coxal3"/>
-    <limit effort="1000.0" lower="${-pi}" upper="${pi}" velocity="${pi/2}"/>
+    <limit effort="1000.0" lower="${-pi}" upper="${pi}" velocity="${2*pi}"/>
     <dynamics damping="0.0" friction="0.0"/>
   </joint>
 
@@ -76,7 +76,7 @@
     <origin xyz="-0.09 0.0535 -0.00075" rpy="-${3*pi/4} ${pi/2} 0"/>
     <parent link="base"/>
     <child link="coxal4"/>
-    <limit effort="1000.0" lower="${-pi}" upper="${pi}" velocity="${pi/2}"/>
+    <limit effort="1000.0" lower="${-pi}" upper="${pi}" velocity="${2*pi}"/>
     <dynamics damping="0.0" friction="0.0"/>
   </joint>
 
@@ -85,7 +85,7 @@
     <origin xyz="0 0.070 -0.00075" rpy="${-pi/2} ${pi/2} 0"/>
     <parent link="base"/>
     <child link="coxal5"/>
-    <limit effort="1000.0" lower="${-pi}" upper="${pi}" velocity="${pi/2}"/>
+    <limit effort="1000.0" lower="${-pi}" upper="${pi}" velocity="${2*pi}"/>
     <dynamics damping="0.0" friction="0.0"/>
   </joint>
 
@@ -94,7 +94,7 @@
     <origin xyz="0.09 0.0535 -0.00075" rpy="${-pi/4} ${pi/2} 0"/>
     <parent link="base"/>
     <child link="coxal6"/>
-    <limit effort="1000.0" lower="${-pi}" upper="${pi}" velocity="${pi/2}"/>
+    <limit effort="1000.0" lower="${-pi}" upper="${pi}" velocity="${2*pi}"/>
     <dynamics damping="0.0" friction="0.0"/>
   </joint>
 

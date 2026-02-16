@@ -18,9 +18,9 @@ BasePose2D MasterPath::pose(double t, TrajectoryType trajectory_type) const
   (void)config_;
   constexpr double straight_speed = 1.2;
   constexpr double diag_speed_x = 0.15, diag_speed_y = 0.20;
-  constexpr double angular_speed = 180.0 * kPi / 180.0;
+  constexpr double angular_speed = 200.0 * kPi / 180.0;
   constexpr double external_orbit_r = 0.30;
-  constexpr double external_orbit_w = 60.0 * kPi / 180.0;
+  constexpr double external_orbit_w = 180.0 * kPi / 180.0;
 
   if (trajectory_type != active_trajectory_type_) {
     active_trajectory_type_ = trajectory_type;
