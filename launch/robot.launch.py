@@ -9,6 +9,7 @@ from launch.actions import (
 )
 from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.conditions import IfCondition
 from launch.substitutions import (
     Command,
     FindExecutable,
@@ -26,6 +27,7 @@ def generate_launch_description():
     pkg_hexapod_share = get_package_share_directory('hexapod_sim')
     pkg_file_path = f"file://{pkg_hexapod_share}/"
     use_sim_time = LaunchConfiguration('use_sim_time', default=True)
+    use_rviz = LaunchConfiguration('rviz')
     rviz_config_file = os.path.join(pkg_hexapod_share, 'rviz', 'config.rviz')
     robot_controllers = PathJoinSubstitution(
         [
@@ -89,7 +91,8 @@ def generate_launch_description():
         executable='rviz2',
         name='rviz2',
         arguments=['-d', rviz_config_file],
-        parameters=[{'use_sim_time': use_sim_time}]
+        parameters=[{'use_sim_time': use_sim_time}],
+        condition=IfCondition(use_rviz),
     )
 
     # Robot spawner
@@ -146,6 +149,10 @@ def generate_launch_description():
             'use_sim_time',
             default_value='true',
             description='If true, use simulated clock'),
+        DeclareLaunchArgument(
+            'rviz',
+            default_value='false',
+            description='Launch RViz2 if true'),
 
         gz_sim,
         prepare_robot_description,
