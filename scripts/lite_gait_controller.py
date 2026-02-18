@@ -49,7 +49,8 @@ class Point3D:
 
 
 class LiteGaitController(Node):
-    PATH_TYPES = ("negativeF", "Positive", "Full")
+    PATH_TYPES = ("half1", "half2", "full")
+    SWING_TYPES = ("half1", "half2", "full1", "full2")
     MOVING_TRAJECTORY_IDS = (1, 2, 3, 4, 5)
     STATIONARY_ID = 0
 
@@ -106,29 +107,26 @@ class LiteGaitController(Node):
         self.active_trajectory_id = self.STATIONARY_ID
         self.next_full_pull_tripod = "B"
 
-    def _new_leg_store(self):
-        return {leg.leg_id: {path_type: [] for path_type in self.PATH_TYPES} for leg in self.legs}
-
-    def _new_transition_store(self):
-        return {
-            from_id: {
-                to_id: {leg.leg_id: [] for leg in self.legs}
-                for to_id in self.MOVING_TRAJECTORY_IDS
-                if to_id != from_id
-            }
-            for from_id in self.MOVING_TRAJECTORY_IDS
-        }
+    def _new_leg_store(self, type_names: Tuple[str, ...]):
+        return {leg.leg_id: {type_name: [] for type_name in type_names} for leg in self.legs}
 
     def _reset_template_stores(self) -> None:
-        self.tip_paths = {traj_id: self._new_leg_store() for traj_id in self.MOVING_TRAJECTORY_IDS}
-        self.tip_swings = {traj_id: self._new_leg_store() for traj_id in self.MOVING_TRAJECTORY_IDS}
-        self.tip_transition_paths = self._new_transition_store()
-        self.tip_transition_swings = self._new_transition_store()
-
-        self.joint_paths = {traj_id: self._new_leg_store() for traj_id in self.MOVING_TRAJECTORY_IDS}
-        self.joint_swings = {traj_id: self._new_leg_store() for traj_id in self.MOVING_TRAJECTORY_IDS}
-        self.joint_transition_paths = self._new_transition_store()
-        self.joint_transition_swings = self._new_transition_store()
+        self.tip_paths = {
+            traj_id: self._new_leg_store(self.PATH_TYPES) for traj_id in self.MOVING_TRAJECTORY_IDS
+        }
+        self.tip_swings = {
+            traj_id: self._new_leg_store(self.SWING_TYPES) for traj_id in self.MOVING_TRAJECTORY_IDS
+        }
+        self.joint_paths = {
+            traj_id: self._new_leg_store(self.PATH_TYPES) for traj_id in self.MOVING_TRAJECTORY_IDS
+        }
+        self.joint_swings = {
+            traj_id: self._new_leg_store(self.SWING_TYPES) for traj_id in self.MOVING_TRAJECTORY_IDS
+        }
+        self.duration_points = {
+            traj_id: {tripod: {"half": 0, "full": 0} for tripod in ("A", "B")}
+            for traj_id in self.MOVING_TRAJECTORY_IDS
+        }
 
     def _initial_joint_goal(self) -> List[float]:
         neutral_tip = Point3D(self.home_x, self.home_y, self.home_z)
@@ -283,16 +281,79 @@ class LiteGaitController(Node):
 
         return path_points
 
-    def swing_builder(self, path_end: Point3D, path_start: Point3D, point_count: int) -> List[Point3D]:
+    @staticmethod
+    def _copy_point(point: Point3D) -> Point3D:
+        return Point3D(point.x, point.y, point.z)
+
+    def _resample_xy_path(self, path: List[Point3D], point_count: int) -> List[Point3D]:
         point_count = max(point_count, 2)
+        if not path:
+            home = Point3D(self.home_x, self.home_y, self.home_z)
+            return [home, home]
+        if len(path) == 1:
+            return [self._copy_point(path[0]) for _ in range(point_count)]
+
+        cumulative = [0.0]
+        for idx in range(1, len(path)):
+            step = math.hypot(path[idx].x - path[idx - 1].x, path[idx].y - path[idx - 1].y)
+            cumulative.append(cumulative[-1] + step)
+        total = cumulative[-1]
+
+        if total <= 1e-12:
+            start = path[0]
+            end = path[-1]
+            out: List[Point3D] = []
+            for idx in range(point_count):
+                s = float(idx) / float(point_count - 1)
+                out.append(
+                    Point3D(
+                        x=start.x + s * (end.x - start.x),
+                        y=start.y + s * (end.y - start.y),
+                        z=start.z + s * (end.z - start.z),
+                    )
+                )
+            return out
+
         out: List[Point3D] = []
+        seg_idx = 0
         for idx in range(point_count):
-            s = float(idx) / float(point_count - 1)
+            target = (float(idx) / float(point_count - 1)) * total
+            while seg_idx < len(cumulative) - 2 and cumulative[seg_idx + 1] < target:
+                seg_idx += 1
+            seg_start = cumulative[seg_idx]
+            seg_end = cumulative[seg_idx + 1]
+            if seg_end <= seg_start:
+                local_s = 0.0
+            else:
+                local_s = (target - seg_start) / (seg_end - seg_start)
+            p0 = path[seg_idx]
+            p1 = path[seg_idx + 1]
             out.append(
                 Point3D(
-                    x=path_end.x + s * (path_start.x - path_end.x),
-                    y=path_end.y + s * (path_start.y - path_end.y),
-                    z=(1.0 - s) * path_end.z + s * path_start.z + self.swing_height * math.sin(math.pi * s),
+                    x=p0.x + local_s * (p1.x - p0.x),
+                    y=p0.y + local_s * (p1.y - p0.y),
+                    z=p0.z + local_s * (p1.z - p0.z),
+                )
+            )
+        return out
+
+    def swing_builder(self, associated_path: List[Point3D], point_count: int) -> List[Point3D]:
+        source = list(reversed(associated_path))
+        if not source:
+            source = [Point3D(self.home_x, self.home_y, self.home_z)]
+        shadow = self._resample_xy_path(source, point_count)
+        z_start = source[0].z
+        z_end = source[-1].z
+
+        out: List[Point3D] = []
+        n = len(shadow)
+        for idx, sample in enumerate(shadow):
+            s = float(idx) / float(n - 1) if n > 1 else 0.0
+            out.append(
+                Point3D(
+                    x=sample.x,
+                    y=sample.y,
+                    z=(1.0 - s) * z_start + s * z_end + self.swing_height * math.sin(math.pi * s),
                 )
             )
         return out
@@ -305,84 +366,71 @@ class LiteGaitController(Node):
             leg_id = leg.leg_id
             positive_path = positive.get(leg_id, [Point3D(self.home_x, self.home_y, self.home_z)])
             negative_path = negative.get(leg_id, [Point3D(self.home_x, self.home_y, self.home_z)])
+            half1 = list(reversed(negative_path))
+            half2 = positive_path
+            full = half1 + half2[1:]
 
-            negative_f = list(reversed(negative_path))
-            full_path = negative_f + positive_path[1:]
+            self.tip_paths[trajectory_type_id][leg_id]["half1"] = half1
+            self.tip_paths[trajectory_type_id][leg_id]["half2"] = half2
+            self.tip_paths[trajectory_type_id][leg_id]["full"] = full
 
-            self.tip_paths[trajectory_type_id][leg_id]["negativeF"] = negative_f
-            self.tip_paths[trajectory_type_id][leg_id]["Positive"] = positive_path
-            self.tip_paths[trajectory_type_id][leg_id]["Full"] = full_path
+    def _set_tripod_duration_points(self, trajectory_type_id: int, tripod: str) -> None:
+        tripod_legs = self._tripod_legs(tripod)
+        if not tripod_legs:
+            return
+        first_leg_id = tripod_legs[0].leg_id
+        half_points = len(self.tip_paths[trajectory_type_id][first_leg_id]["half1"])
+        full_points = len(self.tip_paths[trajectory_type_id][first_leg_id]["full"])
+        half_points = max(half_points, 2)
+        full_points = max(full_points, 2)
+        self.duration_points[trajectory_type_id][tripod]["half"] = half_points
+        self.duration_points[trajectory_type_id][tripod]["full"] = full_points
 
-            self.tip_swings[trajectory_type_id][leg_id]["negativeF"] = self.swing_builder(
-                path_end=negative_f[-1],
-                path_start=negative_f[0],
-                point_count=len(positive_path),
-            )
-            self.tip_swings[trajectory_type_id][leg_id]["Positive"] = self.swing_builder(
-                path_end=positive_path[-1],
-                path_start=positive_path[0],
-                point_count=len(negative_f),
-            )
-            self.tip_swings[trajectory_type_id][leg_id]["Full"] = self.swing_builder(
-                path_end=full_path[-1],
-                path_start=full_path[0],
-                point_count=len(full_path),
-            )
+    @staticmethod
+    def _split_swing_points(swing: List[Point3D], split_idx: int) -> Tuple[List[Point3D], List[Point3D]]:
+        split_idx = max(1, min(split_idx, len(swing) - 1))
+        return swing[:split_idx], swing[split_idx:]
 
-    def _build_transition_templates(self) -> None:
-        home = Point3D(self.home_x, self.home_y, self.home_z)
-        for from_id in self.MOVING_TRAJECTORY_IDS:
-            for to_id in self.MOVING_TRAJECTORY_IDS:
-                if from_id == to_id:
-                    continue
-                for leg in self.legs:
-                    leg_id = leg.leg_id
-                    from_negative_f = self.tip_paths[from_id][leg_id]["negativeF"] or [home]
-                    to_positive = self.tip_paths[to_id][leg_id]["Positive"] or [home]
-                    from_full = self.tip_paths[from_id][leg_id]["Full"] or [home]
-                    to_full = self.tip_paths[to_id][leg_id]["Full"] or [home]
+    def _build_tripod_swings(self, trajectory_type_id: int, tripod: str) -> None:
+        other = self._opposite_tripod(tripod)
+        half_points = self.duration_points[trajectory_type_id][other]["half"]
+        full_points = self.duration_points[trajectory_type_id][other]["full"]
 
-                    transition_path = [Point3D(p.x, p.y, p.z) for p in from_negative_f]
-                    transition_path.extend(Point3D(p.x, p.y, p.z) for p in to_positive)
+        for leg in self._tripod_legs(tripod):
+            leg_id = leg.leg_id
+            half1_path = self.tip_paths[trajectory_type_id][leg_id]["half1"]
+            half2_path = self.tip_paths[trajectory_type_id][leg_id]["half2"]
+            full_path = self.tip_paths[trajectory_type_id][leg_id]["full"]
 
-                    self.tip_transition_paths[from_id][to_id][leg_id] = transition_path
-                    self.tip_transition_swings[from_id][to_id][leg_id] = self.swing_builder(
-                        path_end=from_full[-1],
-                        path_start=to_full[0],
-                        point_count=len(transition_path),
-                    )
+            self.tip_swings[trajectory_type_id][leg_id]["half1"] = self.swing_builder(half1_path, half_points)
+            self.tip_swings[trajectory_type_id][leg_id]["half2"] = self.swing_builder(half2_path, half_points)
+
+            full_swing = self.swing_builder(full_path, full_points)
+            full2, full1 = self._split_swing_points(full_swing, half_points)
+            self.tip_swings[trajectory_type_id][leg_id]["full2"] = full2
+            self.tip_swings[trajectory_type_id][leg_id]["full1"] = full1
 
     def _build_all_templates(self) -> None:
         for trajectory_type_id in self.MOVING_TRAJECTORY_IDS:
             self._build_tripod_templates(trajectory_type_id, "A")
             self._build_tripod_templates(trajectory_type_id, "B")
-        self._build_transition_templates()
+            self._set_tripod_duration_points(trajectory_type_id, "A")
+            self._set_tripod_duration_points(trajectory_type_id, "B")
+            self._build_tripod_swings(trajectory_type_id, "A")
+            self._build_tripod_swings(trajectory_type_id, "B")
 
-    def _convert_tip_store_to_joint_store(self, src, dst) -> None:
+    def _convert_tip_store_to_joint_store(self, src, dst, type_names: Tuple[str, ...]) -> None:
         for trajectory_type_id in self.MOVING_TRAJECTORY_IDS:
             for leg in self.legs:
                 leg_id = leg.leg_id
-                for path_type in self.PATH_TYPES:
-                    dst[trajectory_type_id][leg_id][path_type] = [
-                        self.IK(point) for point in src[trajectory_type_id][leg_id][path_type]
+                for type_name in type_names:
+                    dst[trajectory_type_id][leg_id][type_name] = [
+                        self.IK(point) for point in src[trajectory_type_id][leg_id][type_name]
                     ]
 
     def p_to_joint_space(self) -> None:
-        self._convert_tip_store_to_joint_store(self.tip_paths, self.joint_paths)
-        self._convert_tip_store_to_joint_store(self.tip_swings, self.joint_swings)
-
-        for from_id in self.MOVING_TRAJECTORY_IDS:
-            for to_id in self.MOVING_TRAJECTORY_IDS:
-                if from_id == to_id:
-                    continue
-                for leg in self.legs:
-                    leg_id = leg.leg_id
-                    self.joint_transition_paths[from_id][to_id][leg_id] = [
-                        self.IK(point) for point in self.tip_transition_paths[from_id][to_id][leg_id]
-                    ]
-                    self.joint_transition_swings[from_id][to_id][leg_id] = [
-                        self.IK(point) for point in self.tip_transition_swings[from_id][to_id][leg_id]
-                    ]
+        self._convert_tip_store_to_joint_store(self.tip_paths, self.joint_paths, self.PATH_TYPES)
+        self._convert_tip_store_to_joint_store(self.tip_swings, self.joint_swings, self.SWING_TYPES)
 
     def _send_joint_goal(self, joint_values: List[float]) -> bool:
         goal = FollowJointTrajectory.Goal()
@@ -479,53 +527,60 @@ class LiteGaitController(Node):
         )
         return self._execute_joint_sequences(phase_name, leg_sequences)
 
-    def _execute_transition_phase(self, from_id: int, to_id: int, pull_tripod: str) -> bool:
-        phase_name = f"transition {from_id}->{to_id}"
-        leg_sequences: Dict[int, List[Tuple[float, float, float]]] = {}
-        for leg in self.legs:
-            if leg.tripod == pull_tripod:
-                leg_sequences[leg.leg_id] = self.joint_transition_paths[from_id][to_id][leg.leg_id]
-            else:
-                leg_sequences[leg.leg_id] = self.joint_transition_swings[from_id][to_id][leg.leg_id]
-        return self._execute_joint_sequences(phase_name, leg_sequences)
-
-    def _execute_half_step_start(self, trajectory_type_id: int, pull_tripod: str) -> bool:
+    def _execute_phase_by_tripod(
+        self,
+        phase_name: str,
+        trajectory_type_id: int,
+        pull_tripod: str,
+        pull_path_type: str,
+        swing_type: str,
+    ) -> bool:
         other = self._opposite_tripod(pull_tripod)
         modes = {
-            pull_tripod: ("path", "Positive"),
-            other: ("swing", "negativeF"),
+            pull_tripod: ("path", pull_path_type),
+            other: ("swing", swing_type),
         }
         return self._execute_standard_phase(
-            phase_name=f"start half-step t{trajectory_type_id}",
+            phase_name=phase_name,
             trajectory_type_id=trajectory_type_id,
             tripod_a_mode=modes["A"],
             tripod_b_mode=modes["B"],
+        )
+
+    def _execute_half_step_start(self, trajectory_type_id: int, pull_tripod: str) -> bool:
+        return self._execute_phase_by_tripod(
+            phase_name=f"start half-step t{trajectory_type_id}",
+            trajectory_type_id=trajectory_type_id,
+            pull_tripod=pull_tripod,
+            pull_path_type="half2",
+            swing_type="half1",
         )
 
     def _execute_half_step_final(self, trajectory_type_id: int, pull_tripod: str) -> bool:
-        other = self._opposite_tripod(pull_tripod)
-        modes = {
-            pull_tripod: ("path", "negativeF"),
-            other: ("swing", "Positive"),
-        }
-        return self._execute_standard_phase(
+        return self._execute_phase_by_tripod(
             phase_name=f"final half-step t{trajectory_type_id}",
             trajectory_type_id=trajectory_type_id,
-            tripod_a_mode=modes["A"],
-            tripod_b_mode=modes["B"],
+            pull_tripod=pull_tripod,
+            pull_path_type="half1",
+            swing_type="half2",
         )
 
-    def _execute_full_step(self, trajectory_type_id: int, pull_tripod: str) -> bool:
-        other = self._opposite_tripod(pull_tripod)
-        modes = {
-            pull_tripod: ("path", "Full"),
-            other: ("swing", "Full"),
-        }
-        return self._execute_standard_phase(
-            phase_name=f"full-step t{trajectory_type_id}",
+    def _execute_full_step_first_half(self, trajectory_type_id: int, pull_tripod: str) -> bool:
+        return self._execute_phase_by_tripod(
+            phase_name=f"full-step-1 t{trajectory_type_id}",
             trajectory_type_id=trajectory_type_id,
-            tripod_a_mode=modes["A"],
-            tripod_b_mode=modes["B"],
+            pull_tripod=pull_tripod,
+            pull_path_type="half1",
+            swing_type="full2",
+        )
+
+    def _execute_full_step_second_half(self, trajectory_type_id: int, pull_tripod: str) -> bool:
+        return self._execute_phase_by_tripod(
+            phase_name=f"full-step-2 t{trajectory_type_id}",
+            trajectory_type_id=trajectory_type_id,
+            pull_tripod=pull_tripod,
+            pull_path_type="half2",
+            swing_type="full1",
         )
 
     def coordinator(self) -> bool:
@@ -548,29 +603,33 @@ class LiteGaitController(Node):
                 self.next_full_pull_tripod = "B"
                 continue
 
-            requested = self.requested_trajectory_id
-            if requested == self.STATIONARY_ID:
+            pull_tripod = self.next_full_pull_tripod
+            if not self._execute_full_step_first_half(self.active_trajectory_id, pull_tripod):
+                return False
+
+            requested_mid = self.requested_trajectory_id
+            second_half_trajectory = self.active_trajectory_id
+            stop_after_full = False
+            if requested_mid == self.STATIONARY_ID:
+                stop_after_full = True
+            elif (
+                requested_mid in self.MOVING_TRAJECTORY_IDS
+                and requested_mid != self.active_trajectory_id
+            ):
+                self.get_logger().info(f"Transition {self.active_trajectory_id} -> {requested_mid}")
+                second_half_trajectory = requested_mid
+
+            if not self._execute_full_step_second_half(second_half_trajectory, pull_tripod):
+                return False
+
+            self.active_trajectory_id = second_half_trajectory
+            self.next_full_pull_tripod = self._opposite_tripod(pull_tripod)
+            if stop_after_full:
                 if not self._execute_half_step_final(self.active_trajectory_id, self.next_full_pull_tripod):
                     return False
                 self.active_trajectory_id = self.STATIONARY_ID
                 self.requested_trajectory_id = self.STATIONARY_ID
                 self.get_logger().info("Entered stationary mode")
-                continue
-
-            if requested in self.MOVING_TRAJECTORY_IDS and requested != self.active_trajectory_id:
-                from_id = self.active_trajectory_id
-                to_id = requested
-                self.get_logger().info(f"Transition {from_id} -> {to_id}")
-                if not self._execute_transition_phase(from_id, to_id, self.next_full_pull_tripod):
-                    return False
-                self.active_trajectory_id = to_id
-                self.next_full_pull_tripod = self._opposite_tripod(self.next_full_pull_tripod)
-                continue
-
-            pull_tripod = self.next_full_pull_tripod
-            if not self._execute_full_step(self.active_trajectory_id, pull_tripod):
-                return False
-            self.next_full_pull_tripod = self._opposite_tripod(pull_tripod)
 
         return True
 
