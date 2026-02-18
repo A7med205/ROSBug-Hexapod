@@ -52,6 +52,7 @@ class LiteGaitController(Node):
     PATH_TYPES = ("half1", "half2", "full")
     SWING_TYPES = ("half1", "half2", "full1", "full2")
     MOVING_TRAJECTORY_IDS = (1, 2, 3, 4, 5)
+    TRIPODS = ("A", "B")
     STATIONARY_ID = 0
 
     def __init__(self) -> None:
@@ -155,6 +156,7 @@ class LiteGaitController(Node):
     def _tripod_legs(self, tripod: str) -> List[LegInfo]:
         return [leg for leg in self.legs if leg.tripod == tripod]
 
+    # Convert one leg tip in the local leg frame to joint angles (radians).
     def IK(self, tip: Point3D) -> Tuple[float, float, float]:
         y = tip.y
         x = tip.x
@@ -185,6 +187,7 @@ class LiteGaitController(Node):
         j3 = math.pi - math.acos(cos_knee)
         return j1, j2, j3
 
+    # Convert base motion delta into local tip delta for a stance-locked foot.
     def base_delta_to_tip_delta(
         self,
         base1: BasePose2D,
@@ -220,6 +223,7 @@ class LiteGaitController(Node):
 
         return LocalDisplacement2D(tip_local_2_x - tip_local_1.x, tip_local_2_y - tip_local_1.y)
 
+    # Sample the commanded base pose polynomial for each trajectory type.
     def master_path(self, t: float, trajectory_type_id: int) -> BasePose2D:
         if trajectory_type_id == 1:
             return BasePose2D(0.0, self.linear_speed_y * t, 0.0)
@@ -235,6 +239,7 @@ class LiteGaitController(Node):
             return BasePose2D(x, y, direction * self.angular_speed * t)
         return BasePose2D(0.0, 0.0, 0.0)
 
+    # Build local pull paths by integrating base deltas until any leg hits radius limit.
     def pull_builder(self, tripod: str, trajectory_type_id: int, sign: int) -> Dict[int, List[Point3D]]:
         if sign not in (-1, 1):
             raise ValueError("sign must be +1 or -1")
@@ -337,6 +342,7 @@ class LiteGaitController(Node):
             )
         return out
 
+    # Build swing points over reversed path x/y shadow with sinusoidal z lift.
     def swing_builder(self, associated_path: List[Point3D], point_count: int) -> List[Point3D]:
         source = list(reversed(associated_path))
         if not source:
@@ -410,14 +416,15 @@ class LiteGaitController(Node):
             self.tip_swings[trajectory_type_id][leg_id]["full2"] = full2
             self.tip_swings[trajectory_type_id][leg_id]["full1"] = full1
 
+    # Precompute all path/swing templates for all supported trajectory types.
     def _build_all_templates(self) -> None:
         for trajectory_type_id in self.MOVING_TRAJECTORY_IDS:
-            self._build_tripod_templates(trajectory_type_id, "A")
-            self._build_tripod_templates(trajectory_type_id, "B")
-            self._set_tripod_duration_points(trajectory_type_id, "A")
-            self._set_tripod_duration_points(trajectory_type_id, "B")
-            self._build_tripod_swings(trajectory_type_id, "A")
-            self._build_tripod_swings(trajectory_type_id, "B")
+            for tripod in self.TRIPODS:
+                self._build_tripod_templates(trajectory_type_id, tripod)
+            for tripod in self.TRIPODS:
+                self._set_tripod_duration_points(trajectory_type_id, tripod)
+            for tripod in self.TRIPODS:
+                self._build_tripod_swings(trajectory_type_id, tripod)
 
     def _convert_tip_store_to_joint_store(self, src, dst, type_names: Tuple[str, ...]) -> None:
         for trajectory_type_id in self.MOVING_TRAJECTORY_IDS:
@@ -428,10 +435,12 @@ class LiteGaitController(Node):
                         self.IK(point) for point in src[trajectory_type_id][leg_id][type_name]
                     ]
 
+    # Convert precomputed cartesian templates into joint-space templates.
     def p_to_joint_space(self) -> None:
         self._convert_tip_store_to_joint_store(self.tip_paths, self.joint_paths, self.PATH_TYPES)
         self._convert_tip_store_to_joint_store(self.tip_swings, self.joint_swings, self.SWING_TYPES)
 
+    # Send one single-point FollowJointTrajectory goal.
     def _send_joint_goal(self, joint_values: List[float]) -> bool:
         goal = FollowJointTrajectory.Goal()
         goal.trajectory.joint_names = self.joint_names_flat
@@ -463,6 +472,7 @@ class LiteGaitController(Node):
             return False
         return True
 
+    # Execute one phase point-by-point with 1-degree joint update gating.
     def _execute_joint_sequences(
         self,
         phase_name: str,
@@ -527,6 +537,7 @@ class LiteGaitController(Node):
         )
         return self._execute_joint_sequences(phase_name, leg_sequences)
 
+    # Execute one pull/swing phase by selecting modes for tripod A and B.
     def _execute_phase_by_tripod(
         self,
         phase_name: str,
@@ -535,54 +546,16 @@ class LiteGaitController(Node):
         pull_path_type: str,
         swing_type: str,
     ) -> bool:
-        other = self._opposite_tripod(pull_tripod)
-        modes = {
-            pull_tripod: ("path", pull_path_type),
-            other: ("swing", swing_type),
-        }
+        tripod_a_mode = ("path", pull_path_type) if pull_tripod == "A" else ("swing", swing_type)
+        tripod_b_mode = ("path", pull_path_type) if pull_tripod == "B" else ("swing", swing_type)
         return self._execute_standard_phase(
             phase_name=phase_name,
             trajectory_type_id=trajectory_type_id,
-            tripod_a_mode=modes["A"],
-            tripod_b_mode=modes["B"],
+            tripod_a_mode=tripod_a_mode,
+            tripod_b_mode=tripod_b_mode,
         )
 
-    def _execute_half_step_start(self, trajectory_type_id: int, pull_tripod: str) -> bool:
-        return self._execute_phase_by_tripod(
-            phase_name=f"start half-step t{trajectory_type_id}",
-            trajectory_type_id=trajectory_type_id,
-            pull_tripod=pull_tripod,
-            pull_path_type="half2",
-            swing_type="half1",
-        )
-
-    def _execute_half_step_final(self, trajectory_type_id: int, pull_tripod: str) -> bool:
-        return self._execute_phase_by_tripod(
-            phase_name=f"final half-step t{trajectory_type_id}",
-            trajectory_type_id=trajectory_type_id,
-            pull_tripod=pull_tripod,
-            pull_path_type="half1",
-            swing_type="half2",
-        )
-
-    def _execute_full_step_first_half(self, trajectory_type_id: int, pull_tripod: str) -> bool:
-        return self._execute_phase_by_tripod(
-            phase_name=f"full-step-1 t{trajectory_type_id}",
-            trajectory_type_id=trajectory_type_id,
-            pull_tripod=pull_tripod,
-            pull_path_type="half1",
-            swing_type="full2",
-        )
-
-    def _execute_full_step_second_half(self, trajectory_type_id: int, pull_tripod: str) -> bool:
-        return self._execute_phase_by_tripod(
-            phase_name=f"full-step-2 t{trajectory_type_id}",
-            trajectory_type_id=trajectory_type_id,
-            pull_tripod=pull_tripod,
-            pull_path_type="half2",
-            swing_type="full1",
-        )
-
+    # Main gait state machine: stationary/start/full(mid-switch)/final-stop.
     def coordinator(self) -> bool:
         self.get_logger().info("Building gait templates")
         self._build_all_templates()
@@ -598,13 +571,25 @@ class LiteGaitController(Node):
                     continue
                 self.active_trajectory_id = self.requested_trajectory_id
                 self.get_logger().info(f"Starting trajectory type {self.active_trajectory_id}")
-                if not self._execute_half_step_start(self.active_trajectory_id, pull_tripod="A"):
+                if not self._execute_phase_by_tripod(
+                    phase_name=f"start half-step t{self.active_trajectory_id}",
+                    trajectory_type_id=self.active_trajectory_id,
+                    pull_tripod="A",
+                    pull_path_type="half2",
+                    swing_type="half1",
+                ):
                     return False
                 self.next_full_pull_tripod = "B"
                 continue
 
             pull_tripod = self.next_full_pull_tripod
-            if not self._execute_full_step_first_half(self.active_trajectory_id, pull_tripod):
+            if not self._execute_phase_by_tripod(
+                phase_name=f"full-step-1 t{self.active_trajectory_id}",
+                trajectory_type_id=self.active_trajectory_id,
+                pull_tripod=pull_tripod,
+                pull_path_type="half1",
+                swing_type="full2",
+            ):
                 return False
 
             requested_mid = self.requested_trajectory_id
@@ -619,13 +604,25 @@ class LiteGaitController(Node):
                 self.get_logger().info(f"Transition {self.active_trajectory_id} -> {requested_mid}")
                 second_half_trajectory = requested_mid
 
-            if not self._execute_full_step_second_half(second_half_trajectory, pull_tripod):
+            if not self._execute_phase_by_tripod(
+                phase_name=f"full-step-2 t{second_half_trajectory}",
+                trajectory_type_id=second_half_trajectory,
+                pull_tripod=pull_tripod,
+                pull_path_type="half2",
+                swing_type="full1",
+            ):
                 return False
 
             self.active_trajectory_id = second_half_trajectory
             self.next_full_pull_tripod = self._opposite_tripod(pull_tripod)
             if stop_after_full:
-                if not self._execute_half_step_final(self.active_trajectory_id, self.next_full_pull_tripod):
+                if not self._execute_phase_by_tripod(
+                    phase_name=f"final half-step t{self.active_trajectory_id}",
+                    trajectory_type_id=self.active_trajectory_id,
+                    pull_tripod=self.next_full_pull_tripod,
+                    pull_path_type="half1",
+                    swing_type="half2",
+                ):
                     return False
                 self.active_trajectory_id = self.STATIONARY_ID
                 self.requested_trajectory_id = self.STATIONARY_ID
@@ -633,6 +630,7 @@ class LiteGaitController(Node):
 
         return True
 
+    # Wait for action server, then start coordinator loop.
     def run(self) -> int:
         self.get_logger().info(f"Waiting for action server: {self.action_name}")
         if not self.action_client.wait_for_server(timeout_sec=self.wait_timeout_sec):
