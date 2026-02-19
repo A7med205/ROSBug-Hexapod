@@ -73,7 +73,7 @@ class LiteGaitController(Node):
         self.trajectory_sub = self.create_subscription(Int32, self.trajectory_topic, self._trajectory_callback, 10)
 
     def _init_state(self) -> None:
-        self.limit_radius = 0.05
+        self.limit_radius = 0.04
         self.swing_height = 0.025
         self.sample_rate = 0.02
         self.min_angle = 1.0
@@ -87,7 +87,7 @@ class LiteGaitController(Node):
 
         self.linear_speed_y = 1.2
         self.linear_speed_x = 1.2
-        self.diagonal_speed = 1.2
+        self.diagonal_speed = 0.8
         self.self_angular_speed = 3.14
         self.orbit_angular_speed = 3.14
         self.external_radius = 0.30
