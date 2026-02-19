@@ -72,7 +72,8 @@ install(
 
 install(
   PROGRAMS
-    scripts/trajectory_type_keyboard.py
+    scripts/cpp_controller_keyboard.py
+    scripts/lite_controller_keyboard.py
     scripts/lite_gait_controller.py
     scripts/elevation_pitch_keyboard_controller.py
   DESTINATION

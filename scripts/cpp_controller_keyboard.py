@@ -22,9 +22,9 @@ KEY_TO_TRAJECTORY = {
 }
 
 
-class TrajectoryTypeKeyboardPublisher(Node):
+class CppControllerKeyboardPublisher(Node):
     def __init__(self) -> None:
-        super().__init__('trajectory_type_keyboard')
+        super().__init__('cpp_controller_keyboard')
         self.topic = self.declare_parameter('topic', '/trajectory_type').value
         self.pub = self.create_publisher(Int32, self.topic, 10)
         self.get_logger().info(f"publishing trajectory type on: {self.topic}")
@@ -43,10 +43,10 @@ def read_key(timeout_sec: float = 0.05) -> str:
 
 def main() -> None:
     rclpy.init()
-    node = TrajectoryTypeKeyboardPublisher()
+    node = CppControllerKeyboardPublisher()
     old_settings = termios.tcgetattr(sys.stdin)
 
-    print('Trajectory keyboard publisher')
+    print('CPP controller keyboard publisher')
     print('Press 0..5 to publish trajectory type (s also sends 5=stationary), q to quit.')
 
     try:

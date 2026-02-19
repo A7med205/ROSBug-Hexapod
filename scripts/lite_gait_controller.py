@@ -51,7 +51,7 @@ class Point3D:
 class LiteGaitController(Node):
     PATH_TYPES = ("half1", "half2", "full")
     SWING_TYPES = ("half1", "half2", "full1", "full2")
-    MOVING_TRAJECTORY_IDS = (1, 2, 3, 4, 5)
+    MOVING_TRAJECTORY_IDS = tuple(range(1, 15))
     TRIPODS = ("A", "B")
     STATIONARY_ID = 0
 
@@ -86,10 +86,11 @@ class LiteGaitController(Node):
         self.home_z = -0.050
 
         self.linear_speed_y = 0.6
-        self.angular_speed = 1.57
+        self.linear_speed_x = 0.6
+        self.diagonal_speed = 0.6
+        self.self_angular_speed = 1.57
+        self.orbit_angular_speed = 1.57
         self.external_radius = 0.30
-        self.external_center_x = self.external_radius
-        self.external_center_y = 0.0
 
         self.legs: List[LegInfo] = [
             LegInfo(1, ("jl11", "jl12", "jl13"), FramePose(-0.0535, 0.0900, 135.0), "A"),
@@ -225,18 +226,25 @@ class LiteGaitController(Node):
 
     # Sample the commanded base pose polynomial for each trajectory type.
     def master_path(self, t: float, trajectory_type_id: int) -> BasePose2D:
+        if 8 <= trajectory_type_id <= 14:
+            return self.master_path(-t, trajectory_type_id - 7)
         if trajectory_type_id == 1:
             return BasePose2D(0.0, self.linear_speed_y * t, 0.0)
         if trajectory_type_id == 2:
-            return BasePose2D(0.0, 0.0, self.angular_speed * t)
+            return BasePose2D(self.linear_speed_x * t, 0.0, 0.0)
         if trajectory_type_id == 3:
-            return BasePose2D(0.0, 0.0, -self.angular_speed * t)
-        if trajectory_type_id in (4, 5):
-            direction = 1.0 if trajectory_type_id == 4 else -1.0
-            phi = math.pi + direction * self.angular_speed * t
-            x = self.external_center_x + self.external_radius * math.cos(phi)
-            y = self.external_center_y + self.external_radius * math.sin(phi)
-            return BasePose2D(x, y, direction * self.angular_speed * t)
+            return BasePose2D(self.diagonal_speed * t, self.diagonal_speed * t, 0.0)
+        if trajectory_type_id == 4:
+            return BasePose2D(-self.diagonal_speed * t, self.diagonal_speed * t, 0.0)
+        if trajectory_type_id in (5, 6):
+            center_x = self.external_radius if trajectory_type_id == 5 else -self.external_radius
+            phi0 = math.pi if trajectory_type_id == 5 else 0.0
+            phi = phi0 + self.orbit_angular_speed * t
+            x = center_x + self.external_radius * math.cos(phi)
+            y = self.external_radius * math.sin(phi)
+            return BasePose2D(x, y, self.orbit_angular_speed * t)
+        if trajectory_type_id == 7:
+            return BasePose2D(0.0, 0.0, -self.self_angular_speed * t)
         return BasePose2D(0.0, 0.0, 0.0)
 
     # Build local pull paths by integrating base deltas until any leg hits radius limit.
