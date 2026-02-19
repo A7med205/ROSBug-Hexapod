@@ -85,11 +85,11 @@ class LiteGaitController(Node):
         self.home_y = 0.000
         self.home_z = -0.050
 
-        self.linear_speed_y = 0.6
-        self.linear_speed_x = 0.6
-        self.diagonal_speed = 0.6
-        self.self_angular_speed = 1.57
-        self.orbit_angular_speed = 1.57
+        self.linear_speed_y = 1.2
+        self.linear_speed_x = 1.2
+        self.diagonal_speed = 1.2
+        self.self_angular_speed = 3.14
+        self.orbit_angular_speed = 3.14
         self.external_radius = 0.30
 
         self.legs: List[LegInfo] = [
@@ -590,6 +590,21 @@ class LiteGaitController(Node):
                 self.next_full_pull_tripod = "B"
                 continue
 
+            if self.requested_trajectory_id == self.STATIONARY_ID:
+                final_pull_tripod = self.next_full_pull_tripod
+                if not self._execute_phase_by_tripod(
+                    phase_name=f"final half-step t{self.active_trajectory_id}",
+                    trajectory_type_id=self.active_trajectory_id,
+                    pull_tripod=final_pull_tripod,
+                    pull_path_type="half1",
+                    swing_type="half2",
+                ):
+                    return False
+                self.active_trajectory_id = self.STATIONARY_ID
+                self.requested_trajectory_id = self.STATIONARY_ID
+                self.get_logger().info("Entered stationary mode")
+                continue
+
             pull_tripod = self.next_full_pull_tripod
             if not self._execute_phase_by_tripod(
                 phase_name=f"full-step-1 t{self.active_trajectory_id}",
@@ -602,10 +617,7 @@ class LiteGaitController(Node):
 
             requested_mid = self.requested_trajectory_id
             second_half_trajectory = self.active_trajectory_id
-            stop_after_full = False
-            if requested_mid == self.STATIONARY_ID:
-                stop_after_full = True
-            elif (
+            if (
                 requested_mid in self.MOVING_TRAJECTORY_IDS
                 and requested_mid != self.active_trajectory_id
             ):
@@ -623,18 +635,6 @@ class LiteGaitController(Node):
 
             self.active_trajectory_id = second_half_trajectory
             self.next_full_pull_tripod = self._opposite_tripod(pull_tripod)
-            if stop_after_full:
-                if not self._execute_phase_by_tripod(
-                    phase_name=f"final half-step t{self.active_trajectory_id}",
-                    trajectory_type_id=self.active_trajectory_id,
-                    pull_tripod=self.next_full_pull_tripod,
-                    pull_path_type="half1",
-                    swing_type="half2",
-                ):
-                    return False
-                self.active_trajectory_id = self.STATIONARY_ID
-                self.requested_trajectory_id = self.STATIONARY_ID
-                self.get_logger().info("Entered stationary mode")
 
         return True
 
