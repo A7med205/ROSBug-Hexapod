@@ -55,11 +55,57 @@ class LiteGaitController:
     MIN_PULSE = 500.0
     MAX_PULSE = 2500.0
     SERIAL_POLL_MS = 0
+    JOINT_ORDER = (
+        "j11", "j21", "j31", "j41", "j51", "j61",
+        "j12", "j22", "j32", "j42", "j52", "j62",
+        "j13", "j23", "j33", "j43", "j53", "j63",
+    )
+    CALIBRATION = {
+        "j11": (10.6667, 10.8889),
+        "j12": (10.4444, 11.7778),
+        "j13": (10.4444, 11.3333),
+        "j21": (10.3333, 11.3333),
+        "j22": (10.5556, 12.0000),
+        "j23": (11.1667, 11.1667),
+        "j31": (11.1111, 10.6667),
+        "j32": (11.1111, 10.8889),
+        "j33": (11.0000, 10.6667),
+        "j41": (10.5556, 10.8889),
+        "j42": (11.1111, 11.0000),
+        "j43": (10.7778, 11.1111),
+        "j51": (12.0000, 11.1111),
+        "j52": (10.6667, 11.1111),
+        "j53": (10.6667, 10.8889),
+        "j61": (10.8889, 11.1111),
+        "j62": (11.5556, 10.4444),
+        "j63": (11.0000, 10.5556),
+    }
+    ROBOT_TO_SERVO = {
+        "j11": (1.0, 0.0),
+        "j12": (-1.0, -78.0),
+        "j13": (1.0, -121.0),
+        "j21": (1.0, 0.0),
+        "j22": (-1.0, -69.0),
+        "j23": (1.0, -114.0),
+        "j31": (1.0, 0.0),
+        "j32": (-1.0, -79.0),
+        "j33": (1.0, -121.0),
+        "j41": (1.0, 0.0),
+        "j42": (-1.0, -74.0),
+        "j43": (1.0, -118.0),
+        "j51": (1.0, 0.0),
+        "j52": (-1.0, -67.0),
+        "j53": (1.0, -112.0),
+        "j61": (1.0, 0.0),
+        "j62": (-1.0, -78.0),
+        "j63": (1.0, -121.0),
+    }
 
     def __init__(self) -> None:
         self.wait_timeout_sec = 10.0
         self.sample_rate = 0.02
-        self._load_calibration()
+        self.calibration = dict(self.CALIBRATION)
+        self.robot_to_servo = dict(self.ROBOT_TO_SERVO)
         self._init_state()
         self._init_servo_cluster()
         self.serial_poll = uselect.poll()
@@ -67,23 +113,17 @@ class LiteGaitController:
 
     def _log(self, message: str) -> None:
         print(message)
+        self._flush_stdout()
 
-    def _load_calibration(self) -> None:
-        namespace = {}
-        candidate_paths = (
-            "calibration.txt",
-            "servo2040/gait2/calibration.txt",
-        )
-        for path in candidate_paths:
-            try:
-                with open(path, "r") as handle:
-                    exec(handle.read(), {}, namespace)
-                self.calibration = namespace["CALIBRATION"]
-                self.robot_to_servo = namespace["ROBOT_TO_SERVO"]
-                return
-            except OSError:
-                continue
-        raise OSError("unable to load calibration.txt")
+    def _reply(self, message: str) -> None:
+        print(message)
+        self._flush_stdout()
+
+    @staticmethod
+    def _flush_stdout() -> None:
+        flush = getattr(sys.stdout, "flush", None)
+        if flush is not None:
+            flush()
 
     def _init_servo_cluster(self) -> None:
         gc.collect()
@@ -106,11 +146,11 @@ class LiteGaitController:
         self.home_y = 0.000
         self.home_z = -0.050
 
-        self.linear_speed_y = 0.12
-        self.linear_speed_x = 0.12
-        self.diagonal_speed = 0.12
-        self.self_angular_speed = 0.75
-        self.orbit_angular_speed = 0.75
+        self.linear_speed_y = 0.25
+        self.linear_speed_x = 0.25
+        self.diagonal_speed = 0.25
+        self.self_angular_speed = 1.75
+        self.orbit_angular_speed = 1.57
         self.external_radius = 0.30
 
         self.legs = [
@@ -121,7 +161,8 @@ class LiteGaitController:
             LegInfo(5, ("j51", "j52", "j53"), FramePose(0.0700, 0.0000, 0.0), "A"),
             LegInfo(6, ("j61", "j62", "j63"), FramePose(0.0535, -0.0900, -45.0), "B"),
         ]
-        self.joint_names_flat = [joint for leg in self.legs for joint in leg.joint_names]
+        self.leg_joint_names_flat = [joint for leg in self.legs for joint in leg.joint_names]
+        self.joint_names_flat = list(self.JOINT_ORDER)
         self.joint_to_channel = {joint: idx for idx, joint in enumerate(self.joint_names_flat)}
 
         self._reset_template_stores()
@@ -130,6 +171,7 @@ class LiteGaitController:
         self.requested_trajectory_id = self.STATIONARY_ID
         self.active_trajectory_id = self.STATIONARY_ID
         self.next_full_pull_tripod = "B"
+        self.prepared_trajectory_ids = set()
 
     def _new_leg_store(self, type_names):
         return {leg.leg_id: {type_name: [] for type_name in type_names} for leg in self.legs}
@@ -152,6 +194,13 @@ class LiteGaitController:
             for traj_id in self.MOVING_TRAJECTORY_IDS
         }
 
+    def _clear_trajectory_templates(self, trajectory_type_id) -> None:
+        self.tip_paths[trajectory_type_id] = self._new_leg_store(self.PATH_TYPES)
+        self.tip_swings[trajectory_type_id] = self._new_leg_store(self.SWING_TYPES)
+        self.duration_points[trajectory_type_id] = {
+            tripod: {"half": 0, "full": 0} for tripod in self.TRIPODS
+        }
+
     def _initial_joint_goal(self):
         neutral_tip = Point3D(self.home_x, self.home_y, self.home_z)
         values = []
@@ -171,21 +220,21 @@ class LiteGaitController:
 
         try:
             if command == "PING":
-                print("PONG")
+                self._reply("PONG")
             elif command == "TRAJ":
                 if len(parts) < 2:
-                    print("ERR MISSING_TRAJ_ID")
+                    self._reply("ERR MISSING_TRAJ_ID")
                     return
                 value = int(parts[1])
                 if value != self.STATIONARY_ID and value not in self.MOVING_TRAJECTORY_IDS:
-                    print("ERR BAD_TRAJ", value)
+                    self._reply("ERR BAD_TRAJ %d" % value)
                     return
                 self._set_requested_trajectory(value)
-                print("OK TRAJ", value)
+                self._reply("OK TRAJ %d" % value)
             else:
-                print("ERR UNKNOWN_CMD")
+                self._reply("ERR UNKNOWN_CMD")
         except Exception as exc:
-            print("ERR", repr(exc))
+            self._reply("ERR %r" % (exc,))
 
     def _poll_serial_commands(self) -> None:
         while self.serial_poll.poll(self.SERIAL_POLL_MS):
@@ -197,6 +246,18 @@ class LiteGaitController:
     @staticmethod
     def _clamp(value, min_value, max_value):
         return max(min_value, min(max_value, value))
+
+    @staticmethod
+    def _hypot(x, y):
+        return math.sqrt(x * x + y * y)
+
+    @staticmethod
+    def _isclose(value_a, value_b, abs_tol=1e-9):
+        return abs(value_a - value_b) <= abs_tol
+
+    @staticmethod
+    def _isfinite(value):
+        return value == value and value not in (float("inf"), float("-inf"))
 
     @staticmethod
     def _deg_to_rad(deg):
@@ -349,7 +410,7 @@ class LiteGaitController:
                 path_points[leg.leg_id].append(tip_next)
 
                 sx, sy = start_xy[leg.leg_id]
-                if math.hypot(tip_next.x - sx, tip_next.y - sy) >= self.limit_radius:
+                if self._hypot(tip_next.x - sx, tip_next.y - sy) >= self.limit_radius:
                     hit_limit = True
 
             t_prev = t_curr
@@ -373,7 +434,7 @@ class LiteGaitController:
 
         cumulative = [0.0]
         for idx in range(1, len(path)):
-            step = math.hypot(path[idx].x - path[idx - 1].x, path[idx].y - path[idx - 1].y)
+            step = self._hypot(path[idx].x - path[idx - 1].x, path[idx].y - path[idx - 1].y)
             cumulative.append(cumulative[-1] + step)
         total = cumulative[-1]
 
@@ -499,23 +560,30 @@ class LiteGaitController:
             for tripod in self.TRIPODS:
                 self._build_tripod_swings(trajectory_type_id, tripod)
 
-    def _convert_tip_store_to_joint_store(self, src, dst, type_names) -> None:
-        for trajectory_type_id in self.MOVING_TRAJECTORY_IDS:
-            for leg in self.legs:
-                leg_id = leg.leg_id
-                for type_name in type_names:
-                    dst[trajectory_type_id][leg_id][type_name] = [
-                        self.IK(point) for point in src[trajectory_type_id][leg_id][type_name]
-                    ]
+    def _prepare_trajectory(self, trajectory_type_id) -> None:
+        if trajectory_type_id in self.prepared_trajectory_ids:
+            return
+        self._clear_trajectory_templates(trajectory_type_id)
+        for tripod in self.TRIPODS:
+            self._build_tripod_templates(trajectory_type_id, tripod)
+        for tripod in self.TRIPODS:
+            self._set_tripod_duration_points(trajectory_type_id, tripod)
+        for tripod in self.TRIPODS:
+            self._build_tripod_swings(trajectory_type_id, tripod)
+        self.prepared_trajectory_ids.add(trajectory_type_id)
 
-    # Convert precomputed cartesian templates into joint-space templates.
-    def p_to_joint_space(self) -> None:
-        self._convert_tip_store_to_joint_store(self.tip_paths, self.joint_paths, self.PATH_TYPES)
-        self._convert_tip_store_to_joint_store(self.tip_swings, self.joint_swings, self.SWING_TYPES)
+    def _release_unused_trajectories(self, keep_ids) -> None:
+        keep = {traj_id for traj_id in keep_ids if traj_id in self.MOVING_TRAJECTORY_IDS}
+        for trajectory_type_id in tuple(self.prepared_trajectory_ids):
+            if trajectory_type_id in keep:
+                continue
+            self._clear_trajectory_templates(trajectory_type_id)
+            self.prepared_trajectory_ids.discard(trajectory_type_id)
+        gc.collect()
 
     def _joint_values_to_pulses(self, joint_values):
         pulses = [0.0] * self.SERVO_COUNT
-        for idx, joint_name in enumerate(self.joint_names_flat):
+        for idx, joint_name in enumerate(self.leg_joint_names_flat):
             channel = self.joint_to_channel[joint_name]
             pulses[channel] = self.robot_angle_to_pulse(joint_name, joint_values[idx])
         return pulses
@@ -551,7 +619,7 @@ class LiteGaitController:
         time.sleep(2.0)
 
         z_delta = self.home_z - self.startup_z
-        if math.isclose(z_delta, 0.0, abs_tol=1e-9):
+        if self._isclose(z_delta, 0.0, abs_tol=1e-9):
             return True
 
         startup_speed = abs(self.startup_vel)
@@ -575,7 +643,7 @@ class LiteGaitController:
             changed = False
             for joint_idx, desired in enumerate(desired_flat):
                 current = self.current_joint_goal[joint_idx]
-                if (not math.isfinite(current)) or abs(desired - current) >= min_angle_rad:
+                if (not self._isfinite(current)) or abs(desired - current) >= min_angle_rad:
                     self.current_joint_goal[joint_idx] = desired
                     changed = True
 
@@ -589,7 +657,7 @@ class LiteGaitController:
             home_joint_values.extend(self.IK(home_tip))
 
         if any(
-            (not math.isfinite(current)) or abs(desired - current) > 1e-9
+            (not self._isfinite(current)) or abs(desired - current) > 1e-9
             for current, desired in zip(self.current_joint_goal, home_joint_values)
         ):
             if not self._send_joint_goal(home_joint_values):
@@ -618,11 +686,11 @@ class LiteGaitController:
             for leg in self.legs:
                 seq = leg_sequences[leg.leg_id]
                 sample = seq[point_idx] if point_idx < len(seq) else seq[-1]
-                desired_flat.extend(sample)
+                desired_flat.extend(self.IK(sample))
 
             for joint_idx, desired in enumerate(desired_flat):
                 current = self.current_joint_goal[joint_idx]
-                if (not math.isfinite(current)) or abs(desired - current) >= min_angle_rad:
+                if (not self._isfinite(current)) or abs(desired - current) >= min_angle_rad:
                     self.current_joint_goal[joint_idx] = desired
 
             if not self._send_joint_goal(self.current_joint_goal):
@@ -642,8 +710,8 @@ class LiteGaitController:
 
     def _execute_standard_phase(self, phase_name, trajectory_type_id, tripod_a_mode, tripod_b_mode) -> bool:
         leg_sequences = self._collect_phase_sequences(
-            source_paths=self.joint_paths[trajectory_type_id],
-            source_swings=self.joint_swings[trajectory_type_id],
+            source_paths=self.tip_paths[trajectory_type_id],
+            source_swings=self.tip_swings[trajectory_type_id],
             tripod_a_mode=tripod_a_mode,
             tripod_b_mode=tripod_b_mode,
         )
@@ -662,12 +730,8 @@ class LiteGaitController:
 
     # Main gait state machine: stationary/start/full(mid-switch)/final-stop.
     def coordinator(self) -> bool:
-        self._log("Building gait templates")
-        self._build_all_templates()
-        self._log("Converting templates to joint space")
-        self.p_to_joint_space()
         self._log("Controller ready (stationary)")
-        print("READY")
+        self._reply("READY")
 
         while True:
             self._poll_serial_commands()
@@ -676,6 +740,8 @@ class LiteGaitController:
                 if self.requested_trajectory_id not in self.MOVING_TRAJECTORY_IDS:
                     time.sleep(0.02)
                     continue
+                self._prepare_trajectory(self.requested_trajectory_id)
+                self._release_unused_trajectories((self.requested_trajectory_id,))
                 self.active_trajectory_id = self.requested_trajectory_id
                 self._log("Starting trajectory type %d" % self.active_trajectory_id)
                 if not self._execute_phase_by_tripod(
@@ -701,10 +767,12 @@ class LiteGaitController:
                     return False
                 self.active_trajectory_id = self.STATIONARY_ID
                 self.requested_trajectory_id = self.STATIONARY_ID
+                self._release_unused_trajectories(())
                 self._log("Entered stationary mode")
                 continue
 
             pull_tripod = self.next_full_pull_tripod
+            self._prepare_trajectory(self.active_trajectory_id)
             if not self._execute_phase_by_tripod(
                 phase_name="full-step-1 t%d" % self.active_trajectory_id,
                 trajectory_type_id=self.active_trajectory_id,
@@ -720,6 +788,7 @@ class LiteGaitController:
                 requested_mid in self.MOVING_TRAJECTORY_IDS
                 and requested_mid != self.active_trajectory_id
             ):
+                self._prepare_trajectory(requested_mid)
                 self._log("Transition %d -> %d" % (self.active_trajectory_id, requested_mid))
                 second_half_trajectory = requested_mid
 
@@ -734,6 +803,7 @@ class LiteGaitController:
 
             self.active_trajectory_id = second_half_trajectory
             self.next_full_pull_tripod = self._opposite_tripod(pull_tripod)
+            self._release_unused_trajectories((self.active_trajectory_id,))
 
         return True
 

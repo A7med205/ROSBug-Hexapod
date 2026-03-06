@@ -38,7 +38,7 @@ class LiteControllerKeyboardPublisher:
         self.port = port
         self.baudrate = baudrate
         self.mode = "diagonal"
-        self.serial = serial.Serial(self.port, self.baudrate, timeout=0.05)
+        self.serial = serial.Serial(self.port, self.baudrate, timeout=0.1)
 
     def close(self) -> None:
         try:
@@ -49,33 +49,43 @@ class LiteControllerKeyboardPublisher:
     def log(self, message: str) -> None:
         print(message)
 
-    def wait_for_ready(self, timeout_sec: float = 5.0) -> None:
-        self.log(f"waiting for board on {self.port}")
+    def _read_response(self, expected_prefixes: tuple[str, ...], timeout_sec: float) -> str:
         deadline = time.monotonic() + timeout_sec
         while time.monotonic() < deadline:
             line = self.serial.readline().decode(errors="ignore").strip()
             if not line:
                 continue
             self.log(f"<< {line}")
-            if line == "READY":
-                return
+            if line in ("PING",) or line.startswith("TRAJ "):
+                continue
+            if any(line.startswith(prefix) for prefix in expected_prefixes):
+                return line
+        return ""
+
+    def wait_for_ready(self, timeout_sec: float = 5.0) -> None:
+        self.log(f"waiting for board on {self.port}")
+        self.serial.reset_input_buffer()
+        ready = self._read_response(("READY",), timeout_sec)
+        if ready == "READY":
+            return
         self.log("didn't receive READY, continuing anyway")
 
-    def send_line(self, line: str) -> str:
+    def send_line(self, line: str, expected_prefixes: tuple[str, ...], timeout_sec: float = 2.0) -> str:
         self.serial.write((line + "\n").encode("utf-8"))
         self.serial.flush()
-        response = self.serial.readline().decode(errors="ignore").strip()
-        if response:
-            self.log(f"<< {response}")
-        return response
+        return self._read_response(expected_prefixes, timeout_sec)
 
     def publish_trajectory(self, value: int) -> None:
         self.log(f">> TRAJ {value}")
-        self.send_line(f"TRAJ {value}")
+        response = self.send_line(f"TRAJ {value}", ("OK TRAJ", "ERR"), 5.0)
+        if not response:
+            self.log("no trajectory acknowledgement from board")
 
     def ping(self) -> None:
         self.log(">> PING")
-        self.send_line("PING")
+        response = self.send_line("PING", ("PONG", "ERR"), 5.0)
+        if not response:
+            self.log("no ping response from board")
 
     def toggle_mode(self) -> None:
         self.mode = "orbit" if self.mode == "diagonal" else "diagonal"
