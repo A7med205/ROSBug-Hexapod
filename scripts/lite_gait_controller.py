@@ -77,6 +77,8 @@ class LiteGaitController(Node):
         self.swing_height = 0.025
         self.sample_rate = 0.02
         self.min_angle = 1.0
+        self.startup_z = 0.05
+        self.startup_vel = 0.05
         self.L1 = 0.0385
         self.L2 = 0.0700
         self.L3 = 0.1020
@@ -85,11 +87,11 @@ class LiteGaitController(Node):
         self.home_y = 0.000
         self.home_z = -0.050
 
-        self.linear_speed_y = 1.2
-        self.linear_speed_x = 1.2
-        self.diagonal_speed = 0.8
-        self.self_angular_speed = 3.14
-        self.orbit_angular_speed = 3.14
+        self.linear_speed_y = 0.12
+        self.linear_speed_x = 0.12
+        self.diagonal_speed = 0.12
+        self.self_angular_speed = 0.75
+        self.orbit_angular_speed = 0.75
         self.external_radius = 0.30
 
         self.legs: List[LegInfo] = [
@@ -480,6 +482,67 @@ class LiteGaitController(Node):
             return False
         return True
 
+    def startup_(self) -> bool:
+        startup_tip = Point3D(self.home_x, self.home_y, self.startup_z)
+        startup_joint_values: List[float] = []
+        for _ in self.legs:
+            startup_joint_values.extend(self.IK(startup_tip))
+
+        if not self._send_joint_goal(startup_joint_values):
+            self.get_logger().error("startup_: failed to send startup pose")
+            return False
+        self.current_joint_goal = list(startup_joint_values)
+        self.get_clock().sleep_for(Duration(seconds=2.0))
+
+        z_delta = self.home_z - self.startup_z
+        if math.isclose(z_delta, 0.0, abs_tol=1e-9):
+            return True
+
+        startup_speed = abs(self.startup_vel)
+        if startup_speed <= 0.0:
+            self.get_logger().error("startup_: startup_vel must be positive")
+            return False
+
+        z_step = startup_speed * self.sample_rate
+        step_count = max(1, math.ceil(abs(z_delta) / z_step))
+        min_angle_rad = math.radians(self.min_angle)
+
+        for step_idx in range(1, step_count + 1):
+            alpha = step_idx / step_count
+            z = self.startup_z + alpha * z_delta
+            tip = Point3D(self.home_x, self.home_y, z)
+
+            desired_flat: List[float] = []
+            for _ in self.legs:
+                desired_flat.extend(self.IK(tip))
+
+            changed = False
+            for joint_idx, desired in enumerate(desired_flat):
+                current = self.current_joint_goal[joint_idx]
+                if (not math.isfinite(current)) or abs(desired - current) >= min_angle_rad:
+                    self.current_joint_goal[joint_idx] = desired
+                    changed = True
+
+            if changed and not self._send_joint_goal(self.current_joint_goal):
+                self.get_logger().error(f"startup_: failed during interpolation step {step_idx}")
+                return False
+
+        home_tip = Point3D(self.home_x, self.home_y, self.home_z)
+        home_joint_values: List[float] = []
+        for _ in self.legs:
+            home_joint_values.extend(self.IK(home_tip))
+
+        if any(
+            (not math.isfinite(current)) or abs(desired - current) > 1e-9
+            for current, desired in zip(self.current_joint_goal, home_joint_values)
+        ):
+            if not self._send_joint_goal(home_joint_values):
+                self.get_logger().error("startup_: failed to send final home pose")
+                return False
+            self.current_joint_goal = list(home_joint_values)
+
+        return True
+
     # Execute one phase point-by-point with 1-degree joint update gating.
     def _execute_joint_sequences(
         self,
@@ -645,6 +708,8 @@ class LiteGaitController(Node):
             self.get_logger().error(
                 f"Action server unavailable after {self.wait_timeout_sec:.1f}s: {self.action_name}"
             )
+            return 1
+        if not self.startup_():
             return 1
         return 0 if self.coordinator() else 1
 
