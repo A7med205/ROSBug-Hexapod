@@ -3,11 +3,10 @@
 import select
 import sys
 import termios
+import time
 import tty
 
-import rclpy
-from rclpy.node import Node
-from std_msgs.msg import Int32
+import serial
 
 
 LINE_KEYS = {
@@ -34,23 +33,53 @@ ROTATION_KEYS = {
 }
 
 
-class LiteControllerKeyboardPublisher(Node):
-    def __init__(self) -> None:
-        super().__init__("lite_controller_keyboard")
-        self.topic = self.declare_parameter("topic", "/trajectory_type").value
-        self.pub = self.create_publisher(Int32, self.topic, 10)
+class LiteControllerKeyboardPublisher:
+    def __init__(self, port: str = "/dev/ttyACM0", baudrate: int = 115200) -> None:
+        self.port = port
+        self.baudrate = baudrate
         self.mode = "diagonal"
-        self.get_logger().info(f"publishing trajectory type on: {self.topic}")
+        self.serial = serial.Serial(self.port, self.baudrate, timeout=0.05)
+
+    def close(self) -> None:
+        try:
+            self.serial.close()
+        except Exception:
+            pass
+
+    def log(self, message: str) -> None:
+        print(message)
+
+    def wait_for_ready(self, timeout_sec: float = 5.0) -> None:
+        self.log(f"waiting for board on {self.port}")
+        deadline = time.monotonic() + timeout_sec
+        while time.monotonic() < deadline:
+            line = self.serial.readline().decode(errors="ignore").strip()
+            if not line:
+                continue
+            self.log(f"<< {line}")
+            if line == "READY":
+                return
+        self.log("didn't receive READY, continuing anyway")
+
+    def send_line(self, line: str) -> str:
+        self.serial.write((line + "\n").encode("utf-8"))
+        self.serial.flush()
+        response = self.serial.readline().decode(errors="ignore").strip()
+        if response:
+            self.log(f"<< {response}")
+        return response
 
     def publish_trajectory(self, value: int) -> None:
-        msg = Int32()
-        msg.data = value
-        self.pub.publish(msg)
-        self.get_logger().info(f"published trajectory type: {value}")
+        self.log(f">> TRAJ {value}")
+        self.send_line(f"TRAJ {value}")
+
+    def ping(self) -> None:
+        self.log(">> PING")
+        self.send_line("PING")
 
     def toggle_mode(self) -> None:
         self.mode = "orbit" if self.mode == "diagonal" else "diagonal"
-        self.get_logger().info(f"q/e/z/c mode: {self.mode}")
+        self.log(f"q/e/z/c mode: {self.mode}")
 
     def map_key(self, key: str) -> int | None:
         k = key.lower()
@@ -70,7 +99,7 @@ def read_key(timeout_sec: float = 0.05) -> str:
 
 
 def print_help() -> None:
-    print("Lite controller keyboard publisher")
+    print("Lite controller keyboard serial publisher")
     print("Stop: 0")
     print("Lines: w(+Y), d(+X), s(-Y), a(-X)")
     print("Self rotation: o(CCW), p(CW)")
@@ -81,16 +110,16 @@ def print_help() -> None:
 
 
 def main() -> None:
-    rclpy.init()
     node = LiteControllerKeyboardPublisher()
     old_settings = termios.tcgetattr(sys.stdin)
     print_help()
 
     try:
+        node.wait_for_ready()
+        node.ping()
         tty.setraw(sys.stdin.fileno())
         running = True
-        while running and rclpy.ok():
-            rclpy.spin_once(node, timeout_sec=0.02)
+        while running:
             key = read_key(0.03)
             if not key:
                 continue
@@ -106,8 +135,7 @@ def main() -> None:
                 node.publish_trajectory(value)
     finally:
         termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
-        node.destroy_node()
-        rclpy.shutdown()
+        node.close()
 
 
 if __name__ == "__main__":

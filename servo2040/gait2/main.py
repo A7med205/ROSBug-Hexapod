@@ -1,81 +1,100 @@
 #!/usr/bin/env python3
 
+import gc
 import math
-from dataclasses import dataclass
-from typing import Dict, List, Tuple
+import sys
+import time
+import uselect
 
-import rclpy
-from control_msgs.action import FollowJointTrajectory
-from rclpy.action import ActionClient
-from rclpy.duration import Duration
-from rclpy.node import Node
-from std_msgs.msg import Int32
-from trajectory_msgs.msg import JointTrajectoryPoint
+from servo import ServoCluster, servo2040
 
 
-@dataclass(frozen=True)
 class FramePose:
-    x: float
-    y: float
-    theta_deg: float
+    def __init__(self, x, y, theta_deg):
+        self.x = x
+        self.y = y
+        self.theta_deg = theta_deg
 
 
-@dataclass(frozen=True)
 class LegInfo:
-    leg_id: int
-    joint_names: Tuple[str, str, str]
-    frame_pose: FramePose
-    tripod: str
+    def __init__(self, leg_id, joint_names, frame_pose, tripod):
+        self.leg_id = leg_id
+        self.joint_names = joint_names
+        self.frame_pose = frame_pose
+        self.tripod = tripod
 
 
-@dataclass(frozen=True)
 class BasePose2D:
-    x: float
-    y: float
-    theta: float
+    def __init__(self, x, y, theta):
+        self.x = x
+        self.y = y
+        self.theta = theta
 
 
-@dataclass(frozen=True)
 class LocalDisplacement2D:
-    dx_local: float
-    dy_local: float
+    def __init__(self, dx_local, dy_local):
+        self.dx_local = dx_local
+        self.dy_local = dy_local
 
 
-@dataclass
 class Point3D:
-    x: float
-    y: float
-    z: float
+    def __init__(self, x, y, z):
+        self.x = x
+        self.y = y
+        self.z = z
 
 
-class LiteGaitController(Node):
+class LiteGaitController:
     PATH_TYPES = ("half1", "half2", "full")
     SWING_TYPES = ("half1", "half2", "full1", "full2")
     MOVING_TRAJECTORY_IDS = tuple(range(1, 15))
     TRIPODS = ("A", "B")
     STATIONARY_ID = 0
+    SERVO_COUNT = 18
+    CENTER_PULSE = 1500.0
+    MIN_PULSE = 500.0
+    MAX_PULSE = 2500.0
+    SERIAL_POLL_MS = 0
 
     def __init__(self) -> None:
-        super().__init__("lite_gait_controller")
-
-        self.action_name = str(
-            self.declare_parameter(
-                "action_name",
-                "/joint_trajectory_controller/follow_joint_trajectory",
-            ).value
-        )
-        self.wait_timeout_sec = float(self.declare_parameter("wait_timeout_sec", 10.0).value)
-        self.trajectory_topic = str(self.declare_parameter("trajectory_topic", "/trajectory_type").value)
-
+        self.wait_timeout_sec = 10.0
+        self.sample_rate = 0.02
+        self._load_calibration()
         self._init_state()
+        self._init_servo_cluster()
+        self.serial_poll = uselect.poll()
+        self.serial_poll.register(sys.stdin, uselect.POLLIN)
 
-        self.action_client = ActionClient(self, FollowJointTrajectory, self.action_name)
-        self.trajectory_sub = self.create_subscription(Int32, self.trajectory_topic, self._trajectory_callback, 10)
+    def _log(self, message: str) -> None:
+        print(message)
+
+    def _load_calibration(self) -> None:
+        namespace = {}
+        candidate_paths = (
+            "calibration.txt",
+            "servo2040/gait2/calibration.txt",
+        )
+        for path in candidate_paths:
+            try:
+                with open(path, "r") as handle:
+                    exec(handle.read(), {}, namespace)
+                self.calibration = namespace["CALIBRATION"]
+                self.robot_to_servo = namespace["ROBOT_TO_SERVO"]
+                return
+            except OSError:
+                continue
+        raise OSError("unable to load calibration.txt")
+
+    def _init_servo_cluster(self) -> None:
+        gc.collect()
+        start_pin = servo2040.SERVO_1
+        end_pin = getattr(servo2040, "SERVO_%d" % self.SERVO_COUNT)
+        self.servos = ServoCluster(pio=0, sm=0, pins=list(range(start_pin, end_pin + 1)))
+        self.servos.enable_all()
 
     def _init_state(self) -> None:
         self.limit_radius = 0.04
         self.swing_height = 0.025
-        self.sample_rate = 0.02
         self.min_angle = 1.0
         self.startup_z = 0.05
         self.startup_vel = 0.05
@@ -94,15 +113,16 @@ class LiteGaitController(Node):
         self.orbit_angular_speed = 0.75
         self.external_radius = 0.30
 
-        self.legs: List[LegInfo] = [
-            LegInfo(1, ("jl11", "jl12", "jl13"), FramePose(-0.0535, 0.0900, 135.0), "A"),
-            LegInfo(2, ("jl21", "jl22", "jl23"), FramePose(-0.0700, 0.0000, 180.0), "B"),
-            LegInfo(3, ("jl31", "jl32", "jl33"), FramePose(-0.0535, -0.0900, -135.0), "A"),
-            LegInfo(4, ("jl41", "jl42", "jl43"), FramePose(0.0535, 0.0900, 45.0), "B"),
-            LegInfo(5, ("jl51", "jl52", "jl53"), FramePose(0.0700, 0.0000, 0.0), "A"),
-            LegInfo(6, ("jl61", "jl62", "jl63"), FramePose(0.0535, -0.0900, -45.0), "B"),
+        self.legs = [
+            LegInfo(1, ("j11", "j12", "j13"), FramePose(-0.0535, 0.0900, 135.0), "A"),
+            LegInfo(2, ("j21", "j22", "j23"), FramePose(-0.0700, 0.0000, 180.0), "B"),
+            LegInfo(3, ("j31", "j32", "j33"), FramePose(-0.0535, -0.0900, -135.0), "A"),
+            LegInfo(4, ("j41", "j42", "j43"), FramePose(0.0535, 0.0900, 45.0), "B"),
+            LegInfo(5, ("j51", "j52", "j53"), FramePose(0.0700, 0.0000, 0.0), "A"),
+            LegInfo(6, ("j61", "j62", "j63"), FramePose(0.0535, -0.0900, -45.0), "B"),
         ]
         self.joint_names_flat = [joint for leg in self.legs for joint in leg.joint_names]
+        self.joint_to_channel = {joint: idx for idx, joint in enumerate(self.joint_names_flat)}
 
         self._reset_template_stores()
         self.current_joint_goal = self._initial_joint_goal()
@@ -111,7 +131,7 @@ class LiteGaitController(Node):
         self.active_trajectory_id = self.STATIONARY_ID
         self.next_full_pull_tripod = "B"
 
-    def _new_leg_store(self, type_names: Tuple[str, ...]):
+    def _new_leg_store(self, type_names):
         return {leg.leg_id: {type_name: [] for type_name in type_names} for leg in self.legs}
 
     def _reset_template_stores(self) -> None:
@@ -132,35 +152,84 @@ class LiteGaitController(Node):
             for traj_id in self.MOVING_TRAJECTORY_IDS
         }
 
-    def _initial_joint_goal(self) -> List[float]:
+    def _initial_joint_goal(self):
         neutral_tip = Point3D(self.home_x, self.home_y, self.home_z)
-        values: List[float] = []
+        values = []
         for _ in self.legs:
             values.extend(self.IK(neutral_tip))
         return values
 
-    def _trajectory_callback(self, msg: Int32) -> None:
-        value = int(msg.data)
+    def _set_requested_trajectory(self, value) -> None:
         if value == self.STATIONARY_ID or value in self.MOVING_TRAJECTORY_IDS:
             self.requested_trajectory_id = value
 
+    def _handle_serial_line(self, line: str) -> None:
+        parts = line.strip().split()
+        if not parts:
+            return
+        command = parts[0].upper()
+
+        try:
+            if command == "PING":
+                print("PONG")
+            elif command == "TRAJ":
+                if len(parts) < 2:
+                    print("ERR MISSING_TRAJ_ID")
+                    return
+                value = int(parts[1])
+                if value != self.STATIONARY_ID and value not in self.MOVING_TRAJECTORY_IDS:
+                    print("ERR BAD_TRAJ", value)
+                    return
+                self._set_requested_trajectory(value)
+                print("OK TRAJ", value)
+            else:
+                print("ERR UNKNOWN_CMD")
+        except Exception as exc:
+            print("ERR", repr(exc))
+
+    def _poll_serial_commands(self) -> None:
+        while self.serial_poll.poll(self.SERIAL_POLL_MS):
+            line = sys.stdin.readline()
+            if not line:
+                break
+            self._handle_serial_line(line)
+
     @staticmethod
-    def _clamp(value: float, min_value: float, max_value: float) -> float:
+    def _clamp(value, min_value, max_value):
         return max(min_value, min(max_value, value))
 
     @staticmethod
-    def _deg_to_rad(deg: float) -> float:
+    def _deg_to_rad(deg):
         return deg * (math.pi / 180.0)
 
     @staticmethod
-    def _opposite_tripod(tripod: str) -> str:
+    def _rad_to_deg(rad):
+        return rad * (180.0 / math.pi)
+
+    @staticmethod
+    def _opposite_tripod(tripod):
         return "B" if tripod == "A" else "A"
 
-    def _tripod_legs(self, tripod: str) -> List[LegInfo]:
+    def _tripod_legs(self, tripod):
         return [leg for leg in self.legs if leg.tripod == tripod]
 
+    def robot_to_servo_deg(self, joint_name, robot_angle_rad):
+        slope, intercept = self.robot_to_servo[joint_name]
+        return slope * self._rad_to_deg(robot_angle_rad) + intercept
+
+    def servo_deg_to_pulse(self, joint_name, servo_deg):
+        slope_positive, slope_negative = self.calibration[joint_name]
+        if servo_deg >= 0.0:
+            return self.CENTER_PULSE + slope_positive * servo_deg
+        return self.CENTER_PULSE + slope_negative * servo_deg
+
+    def robot_angle_to_pulse(self, joint_name, robot_angle_rad):
+        servo_deg = self.robot_to_servo_deg(joint_name, robot_angle_rad)
+        pulse = self.servo_deg_to_pulse(joint_name, servo_deg)
+        return self._clamp(pulse, self.MIN_PULSE, self.MAX_PULSE)
+
     # Convert one leg tip in the local leg frame to joint angles (radians).
-    def IK(self, tip: Point3D) -> Tuple[float, float, float]:
+    def IK(self, tip):
         y = tip.y
         x = tip.x
         z = tip.z
@@ -191,13 +260,7 @@ class LiteGaitController(Node):
         return j1, j2, j3
 
     # Convert base motion delta into local tip delta for a stance-locked foot.
-    def base_delta_to_tip_delta(
-        self,
-        base1: BasePose2D,
-        base2: BasePose2D,
-        leg: LegInfo,
-        tip_local_1: Point3D,
-    ) -> LocalDisplacement2D:
+    def base_delta_to_tip_delta(self, base1, base2, leg, tip_local_1):
         leg_theta = self._deg_to_rad(leg.frame_pose.theta_deg)
         c1 = math.cos(base1.theta)
         s1 = math.sin(base1.theta)
@@ -227,7 +290,7 @@ class LiteGaitController(Node):
         return LocalDisplacement2D(tip_local_2_x - tip_local_1.x, tip_local_2_y - tip_local_1.y)
 
     # Sample the commanded base pose polynomial for each trajectory type.
-    def master_path(self, t: float, trajectory_type_id: int) -> BasePose2D:
+    def master_path(self, t, trajectory_type_id):
         if 8 <= trajectory_type_id <= 14:
             return self.master_path(-t, trajectory_type_id - 7)
         if trajectory_type_id == 1:
@@ -250,22 +313,22 @@ class LiteGaitController(Node):
         return BasePose2D(0.0, 0.0, 0.0)
 
     # Build local pull paths by integrating base deltas until any leg hits radius limit.
-    def pull_builder(self, tripod: str, trajectory_type_id: int, sign: int) -> Dict[int, List[Point3D]]:
+    def pull_builder(self, tripod, trajectory_type_id, sign):
         if sign not in (-1, 1):
             raise ValueError("sign must be +1 or -1")
 
         selected_legs = self._tripod_legs(tripod)
         home_tip = Point3D(self.home_x, self.home_y, self.home_z)
 
-        path_points: Dict[int, List[Point3D]] = {
+        path_points = {
             leg.leg_id: [Point3D(home_tip.x, home_tip.y, home_tip.z)]
             for leg in selected_legs
         }
-        current_tip: Dict[int, Point3D] = {
+        current_tip = {
             leg.leg_id: Point3D(home_tip.x, home_tip.y, home_tip.z)
             for leg in selected_legs
         }
-        start_xy: Dict[int, Tuple[float, float]] = {
+        start_xy = {
             leg.leg_id: (home_tip.x, home_tip.y)
             for leg in selected_legs
         }
@@ -297,10 +360,10 @@ class LiteGaitController(Node):
         return path_points
 
     @staticmethod
-    def _copy_point(point: Point3D) -> Point3D:
+    def _copy_point(point):
         return Point3D(point.x, point.y, point.z)
 
-    def _resample_xy_path(self, path: List[Point3D], point_count: int) -> List[Point3D]:
+    def _resample_xy_path(self, path, point_count):
         point_count = max(point_count, 2)
         if not path:
             home = Point3D(self.home_x, self.home_y, self.home_z)
@@ -317,7 +380,7 @@ class LiteGaitController(Node):
         if total <= 1e-12:
             start = path[0]
             end = path[-1]
-            out: List[Point3D] = []
+            out = []
             for idx in range(point_count):
                 s = float(idx) / float(point_count - 1)
                 out.append(
@@ -329,7 +392,7 @@ class LiteGaitController(Node):
                 )
             return out
 
-        out: List[Point3D] = []
+        out = []
         seg_idx = 0
         for idx in range(point_count):
             target = (float(idx) / float(point_count - 1)) * total
@@ -353,7 +416,7 @@ class LiteGaitController(Node):
         return out
 
     # Build swing points over reversed path x/y shadow with sinusoidal z lift.
-    def swing_builder(self, associated_path: List[Point3D], point_count: int) -> List[Point3D]:
+    def swing_builder(self, associated_path, point_count):
         source = list(reversed(associated_path))
         if not source:
             source = [Point3D(self.home_x, self.home_y, self.home_z)]
@@ -361,7 +424,7 @@ class LiteGaitController(Node):
         z_start = source[0].z
         z_end = source[-1].z
 
-        out: List[Point3D] = []
+        out = []
         n = len(shadow)
         for idx, sample in enumerate(shadow):
             s = float(idx) / float(n - 1) if n > 1 else 0.0
@@ -374,7 +437,7 @@ class LiteGaitController(Node):
             )
         return out
 
-    def _build_tripod_templates(self, trajectory_type_id: int, tripod: str) -> None:
+    def _build_tripod_templates(self, trajectory_type_id, tripod) -> None:
         positive = self.pull_builder(tripod, trajectory_type_id, +1)
         negative = self.pull_builder(tripod, trajectory_type_id, -1)
 
@@ -390,7 +453,7 @@ class LiteGaitController(Node):
             self.tip_paths[trajectory_type_id][leg_id]["half2"] = half2
             self.tip_paths[trajectory_type_id][leg_id]["full"] = full
 
-    def _set_tripod_duration_points(self, trajectory_type_id: int, tripod: str) -> None:
+    def _set_tripod_duration_points(self, trajectory_type_id, tripod) -> None:
         tripod_legs = self._tripod_legs(tripod)
         if not tripod_legs:
             return
@@ -403,11 +466,11 @@ class LiteGaitController(Node):
         self.duration_points[trajectory_type_id][tripod]["full"] = full_points
 
     @staticmethod
-    def _split_swing_points(swing: List[Point3D], split_idx: int) -> Tuple[List[Point3D], List[Point3D]]:
+    def _split_swing_points(swing, split_idx):
         split_idx = max(1, min(split_idx, len(swing) - 1))
         return swing[:split_idx], swing[split_idx:]
 
-    def _build_tripod_swings(self, trajectory_type_id: int, tripod: str) -> None:
+    def _build_tripod_swings(self, trajectory_type_id, tripod) -> None:
         other = self._opposite_tripod(tripod)
         half_points = self.duration_points[trajectory_type_id][other]["half"]
         full_points = self.duration_points[trajectory_type_id][other]["full"]
@@ -436,7 +499,7 @@ class LiteGaitController(Node):
             for tripod in self.TRIPODS:
                 self._build_tripod_swings(trajectory_type_id, tripod)
 
-    def _convert_tip_store_to_joint_store(self, src, dst, type_names: Tuple[str, ...]) -> None:
+    def _convert_tip_store_to_joint_store(self, src, dst, type_names) -> None:
         for trajectory_type_id in self.MOVING_TRAJECTORY_IDS:
             for leg in self.legs:
                 leg_id = leg.leg_id
@@ -450,49 +513,42 @@ class LiteGaitController(Node):
         self._convert_tip_store_to_joint_store(self.tip_paths, self.joint_paths, self.PATH_TYPES)
         self._convert_tip_store_to_joint_store(self.tip_swings, self.joint_swings, self.SWING_TYPES)
 
-    # Send one single-point FollowJointTrajectory goal.
-    def _send_joint_goal(self, joint_values: List[float]) -> bool:
-        goal = FollowJointTrajectory.Goal()
-        goal.trajectory.joint_names = self.joint_names_flat
+    def _joint_values_to_pulses(self, joint_values):
+        pulses = [0.0] * self.SERVO_COUNT
+        for idx, joint_name in enumerate(self.joint_names_flat):
+            channel = self.joint_to_channel[joint_name]
+            pulses[channel] = self.robot_angle_to_pulse(joint_name, joint_values[idx])
+        return pulses
 
-        point = JointTrajectoryPoint()
-        point.positions = list(joint_values)
-        point.time_from_start = Duration(seconds=self.sample_rate).to_msg()
-        goal.trajectory.points = [point]
+    def _apply_pulses(self, pulses) -> None:
+        for channel, pulse in enumerate(pulses):
+            if pulse <= 0.0:
+                self.servos.disable(channel)
+            else:
+                self.servos.pulse(channel, pulse)
 
-        send_future = self.action_client.send_goal_async(goal)
-        rclpy.spin_until_future_complete(self, send_future)
-        goal_handle = send_future.result()
-        if goal_handle is None or not goal_handle.accepted:
-            self.get_logger().error("Action goal rejected")
+    # Send one single-point servo goal, then wait instead of using time_from_start.
+    def _send_joint_goal(self, joint_values) -> bool:
+        try:
+            self._apply_pulses(self._joint_values_to_pulses(joint_values))
+            self._poll_serial_commands()
+            time.sleep(self.sample_rate)
+            return True
+        except Exception as exc:
+            self._log("servo goal failed: %r" % (exc,))
             return False
-
-        result_future = goal_handle.get_result_async()
-        rclpy.spin_until_future_complete(self, result_future)
-        result_wrapper = result_future.result()
-        if result_wrapper is None:
-            self.get_logger().error("Action goal returned no result")
-            return False
-
-        result = result_wrapper.result
-        if result.error_code != FollowJointTrajectory.Result.SUCCESSFUL:
-            self.get_logger().error(
-                f"Action failed error_code={result.error_code}, error_string='{result.error_string}'"
-            )
-            return False
-        return True
 
     def startup_(self) -> bool:
         startup_tip = Point3D(self.home_x, self.home_y, self.startup_z)
-        startup_joint_values: List[float] = []
+        startup_joint_values = []
         for _ in self.legs:
             startup_joint_values.extend(self.IK(startup_tip))
 
         if not self._send_joint_goal(startup_joint_values):
-            self.get_logger().error("startup_: failed to send startup pose")
+            self._log("startup_: failed to send startup pose")
             return False
         self.current_joint_goal = list(startup_joint_values)
-        self.get_clock().sleep_for(Duration(seconds=2.0))
+        time.sleep(2.0)
 
         z_delta = self.home_z - self.startup_z
         if math.isclose(z_delta, 0.0, abs_tol=1e-9):
@@ -500,7 +556,7 @@ class LiteGaitController(Node):
 
         startup_speed = abs(self.startup_vel)
         if startup_speed <= 0.0:
-            self.get_logger().error("startup_: startup_vel must be positive")
+            self._log("startup_: startup_vel must be positive")
             return False
 
         z_step = startup_speed * self.sample_rate
@@ -508,11 +564,11 @@ class LiteGaitController(Node):
         min_angle_rad = math.radians(self.min_angle)
 
         for step_idx in range(1, step_count + 1):
-            alpha = step_idx / step_count
+            alpha = float(step_idx) / float(step_count)
             z = self.startup_z + alpha * z_delta
             tip = Point3D(self.home_x, self.home_y, z)
 
-            desired_flat: List[float] = []
+            desired_flat = []
             for _ in self.legs:
                 desired_flat.extend(self.IK(tip))
 
@@ -524,11 +580,11 @@ class LiteGaitController(Node):
                     changed = True
 
             if changed and not self._send_joint_goal(self.current_joint_goal):
-                self.get_logger().error(f"startup_: failed during interpolation step {step_idx}")
+                self._log("startup_: failed during interpolation step %d" % step_idx)
                 return False
 
         home_tip = Point3D(self.home_x, self.home_y, self.home_z)
-        home_joint_values: List[float] = []
+        home_joint_values = []
         for _ in self.legs:
             home_joint_values.extend(self.IK(home_tip))
 
@@ -537,31 +593,28 @@ class LiteGaitController(Node):
             for current, desired in zip(self.current_joint_goal, home_joint_values)
         ):
             if not self._send_joint_goal(home_joint_values):
-                self.get_logger().error("startup_: failed to send final home pose")
+                self._log("startup_: failed to send final home pose")
                 return False
             self.current_joint_goal = list(home_joint_values)
 
         return True
 
     # Execute one phase point-by-point with 1-degree joint update gating.
-    def _execute_joint_sequences(
-        self,
-        phase_name: str,
-        leg_sequences: Dict[int, List[Tuple[float, float, float]]],
-    ) -> bool:
+    def _execute_joint_sequences(self, phase_name, leg_sequences) -> bool:
         if not leg_sequences:
-            self.get_logger().error(f"{phase_name}: no sequences")
+            self._log("%s: no sequences" % phase_name)
             return False
         for leg_id, seq in leg_sequences.items():
             if not seq:
-                self.get_logger().error(f"{phase_name}: empty sequence for leg {leg_id}")
+                self._log("%s: empty sequence for leg %d" % (phase_name, leg_id))
                 return False
 
         phase_points = max(len(seq) for seq in leg_sequences.values())
         min_angle_rad = math.radians(self.min_angle)
 
         for point_idx in range(phase_points):
-            desired_flat: List[float] = []
+            self._poll_serial_commands()
+            desired_flat = []
             for leg in self.legs:
                 seq = leg_sequences[leg.leg_id]
                 sample = seq[point_idx] if point_idx < len(seq) else seq[-1]
@@ -573,33 +626,21 @@ class LiteGaitController(Node):
                     self.current_joint_goal[joint_idx] = desired
 
             if not self._send_joint_goal(self.current_joint_goal):
-                self.get_logger().error(f"{phase_name}: failed at point {point_idx}")
+                self._log("%s: failed at point %d" % (phase_name, point_idx))
                 return False
 
         return True
 
-    def _collect_phase_sequences(
-        self,
-        source_paths,
-        source_swings,
-        tripod_a_mode: Tuple[str, str],
-        tripod_b_mode: Tuple[str, str],
-    ) -> Dict[int, List[Tuple[float, float, float]]]:
+    def _collect_phase_sequences(self, source_paths, source_swings, tripod_a_mode, tripod_b_mode):
         tripod_mode = {"A": tripod_a_mode, "B": tripod_b_mode}
-        out: Dict[int, List[Tuple[float, float, float]]] = {}
+        out = {}
         for leg in self.legs:
             mode_kind, path_type = tripod_mode[leg.tripod]
             store = source_paths if mode_kind == "path" else source_swings
             out[leg.leg_id] = store[leg.leg_id][path_type]
         return out
 
-    def _execute_standard_phase(
-        self,
-        phase_name: str,
-        trajectory_type_id: int,
-        tripod_a_mode: Tuple[str, str],
-        tripod_b_mode: Tuple[str, str],
-    ) -> bool:
+    def _execute_standard_phase(self, phase_name, trajectory_type_id, tripod_a_mode, tripod_b_mode) -> bool:
         leg_sequences = self._collect_phase_sequences(
             source_paths=self.joint_paths[trajectory_type_id],
             source_swings=self.joint_swings[trajectory_type_id],
@@ -609,14 +650,7 @@ class LiteGaitController(Node):
         return self._execute_joint_sequences(phase_name, leg_sequences)
 
     # Execute one pull/swing phase by selecting modes for tripod A and B.
-    def _execute_phase_by_tripod(
-        self,
-        phase_name: str,
-        trajectory_type_id: int,
-        pull_tripod: str,
-        pull_path_type: str,
-        swing_type: str,
-    ) -> bool:
+    def _execute_phase_by_tripod(self, phase_name, trajectory_type_id, pull_tripod, pull_path_type, swing_type):
         tripod_a_mode = ("path", pull_path_type) if pull_tripod == "A" else ("swing", swing_type)
         tripod_b_mode = ("path", pull_path_type) if pull_tripod == "B" else ("swing", swing_type)
         return self._execute_standard_phase(
@@ -628,22 +662,24 @@ class LiteGaitController(Node):
 
     # Main gait state machine: stationary/start/full(mid-switch)/final-stop.
     def coordinator(self) -> bool:
-        self.get_logger().info("Building gait templates")
+        self._log("Building gait templates")
         self._build_all_templates()
-        self.get_logger().info("Converting templates to joint space")
+        self._log("Converting templates to joint space")
         self.p_to_joint_space()
-        self.get_logger().info("Controller ready (stationary)")
+        self._log("Controller ready (stationary)")
+        print("READY")
 
-        while rclpy.ok():
-            rclpy.spin_once(self, timeout_sec=0.1)
+        while True:
+            self._poll_serial_commands()
 
             if self.active_trajectory_id == self.STATIONARY_ID:
                 if self.requested_trajectory_id not in self.MOVING_TRAJECTORY_IDS:
+                    time.sleep(0.02)
                     continue
                 self.active_trajectory_id = self.requested_trajectory_id
-                self.get_logger().info(f"Starting trajectory type {self.active_trajectory_id}")
+                self._log("Starting trajectory type %d" % self.active_trajectory_id)
                 if not self._execute_phase_by_tripod(
-                    phase_name=f"start half-step t{self.active_trajectory_id}",
+                    phase_name="start half-step t%d" % self.active_trajectory_id,
                     trajectory_type_id=self.active_trajectory_id,
                     pull_tripod="A",
                     pull_path_type="half2",
@@ -656,7 +692,7 @@ class LiteGaitController(Node):
             if self.requested_trajectory_id == self.STATIONARY_ID:
                 final_pull_tripod = self.next_full_pull_tripod
                 if not self._execute_phase_by_tripod(
-                    phase_name=f"final half-step t{self.active_trajectory_id}",
+                    phase_name="final half-step t%d" % self.active_trajectory_id,
                     trajectory_type_id=self.active_trajectory_id,
                     pull_tripod=final_pull_tripod,
                     pull_path_type="half1",
@@ -665,12 +701,12 @@ class LiteGaitController(Node):
                     return False
                 self.active_trajectory_id = self.STATIONARY_ID
                 self.requested_trajectory_id = self.STATIONARY_ID
-                self.get_logger().info("Entered stationary mode")
+                self._log("Entered stationary mode")
                 continue
 
             pull_tripod = self.next_full_pull_tripod
             if not self._execute_phase_by_tripod(
-                phase_name=f"full-step-1 t{self.active_trajectory_id}",
+                phase_name="full-step-1 t%d" % self.active_trajectory_id,
                 trajectory_type_id=self.active_trajectory_id,
                 pull_tripod=pull_tripod,
                 pull_path_type="half1",
@@ -684,11 +720,11 @@ class LiteGaitController(Node):
                 requested_mid in self.MOVING_TRAJECTORY_IDS
                 and requested_mid != self.active_trajectory_id
             ):
-                self.get_logger().info(f"Transition {self.active_trajectory_id} -> {requested_mid}")
+                self._log("Transition %d -> %d" % (self.active_trajectory_id, requested_mid))
                 second_half_trajectory = requested_mid
 
             if not self._execute_phase_by_tripod(
-                phase_name=f"full-step-2 t{second_half_trajectory}",
+                phase_name="full-step-2 t%d" % second_half_trajectory,
                 trajectory_type_id=second_half_trajectory,
                 pull_tripod=pull_tripod,
                 pull_path_type="half2",
@@ -701,30 +737,19 @@ class LiteGaitController(Node):
 
         return True
 
-    # Wait for action server, then start coordinator loop.
     def run(self) -> int:
-        self.get_logger().info(f"Waiting for action server: {self.action_name}")
-        if not self.action_client.wait_for_server(timeout_sec=self.wait_timeout_sec):
-            self.get_logger().error(
-                f"Action server unavailable after {self.wait_timeout_sec:.1f}s: {self.action_name}"
-            )
-            return 1
         if not self.startup_():
             return 1
         return 0 if self.coordinator() else 1
 
 
 def main() -> None:
-    rclpy.init(args=None)
-    node = LiteGaitController()
+    controller = LiteGaitController()
     exit_code = 0
     try:
-        exit_code = node.run()
+        exit_code = controller.run()
     except KeyboardInterrupt:
         exit_code = 130
-    finally:
-        node.destroy_node()
-        rclpy.shutdown()
     raise SystemExit(exit_code)
 
 
