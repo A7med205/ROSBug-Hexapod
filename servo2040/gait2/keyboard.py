@@ -1,44 +1,79 @@
 #!/usr/bin/env python3
 
+import math
 import select
 import sys
 import termios
 import time
 import tty
+from dataclasses import dataclass
+from typing import Dict, List, Tuple
 
 import serial
 
 
 LINE_KEYS = {
-    "w": 1,   # +Y
-    "d": 2,   # +X
-    "s": 8,   # -Y
-    "a": 9,   # -X
+    "w": 1,
+    "d": 2,
+    "s": 8,
+    "a": 9,
 }
 DIAGONAL_KEYS = {
-    "q": 4,   # +Y,-X
-    "e": 3,   # +Y,+X
-    "z": 10,  # -Y,-X
-    "c": 11,  # -Y,+X
+    "q": 4,
+    "e": 3,
+    "z": 10,
+    "c": 11,
 }
 ORBIT_KEYS = {
-    "q": 6,   # center -X
-    "e": 12,  # reverse of center +X
-    "z": 13,  # reverse of center -X
-    "c": 5,   # center +X
+    "q": 6,
+    "e": 12,
+    "z": 13,
+    "c": 5,
 }
 ROTATION_KEYS = {
-    "o": 14,  # self CCW
-    "p": 7,   # self CW
+    "o": 14,
+    "p": 7,
 }
 
 
-class LiteControllerKeyboardPublisher:
+@dataclass(frozen=True)
+class FramePose:
+    x: float
+    y: float
+    theta_deg: float
+
+
+@dataclass(frozen=True)
+class LegInfo:
+    leg_id: int
+    joint_names: Tuple[str, str, str]
+    frame_pose: FramePose
+    tripod: str
+
+
+@dataclass(frozen=True)
+class BasePose2D:
+    x: float
+    y: float
+    theta: float
+
+
+@dataclass(frozen=True)
+class LocalDisplacement2D:
+    dx_local: float
+    dy_local: float
+
+
+@dataclass
+class Point3D:
+    x: float
+    y: float
+    z: float
+
+
+class BoardClient:
     def __init__(self, port: str = "/dev/ttyACM0", baudrate: int = 115200) -> None:
-        self.port = port
-        self.baudrate = baudrate
-        self.mode = "diagonal"
-        self.serial = serial.Serial(self.port, self.baudrate, timeout=0.1)
+        self.serial = serial.Serial(port, baudrate, timeout=0.1)
 
     def close(self) -> None:
         try:
@@ -46,70 +81,447 @@ class LiteControllerKeyboardPublisher:
         except Exception:
             pass
 
-    def log(self, message: str) -> None:
-        print(message)
-
-    def _read_response(self, expected_prefixes: tuple[str, ...], timeout_sec: float) -> str:
+    def _read_response(self, expected_prefixes: Tuple[str, ...], timeout_sec: float) -> str:
         deadline = time.monotonic() + timeout_sec
         while time.monotonic() < deadline:
             line = self.serial.readline().decode(errors="ignore").strip()
             if not line:
                 continue
-            self.log(f"<< {line}")
-            if line in ("PING",) or line.startswith("TRAJ "):
+            print(f"<< {line}")
+            if line in ("PING",) or line.startswith("GOAL "):
                 continue
             if any(line.startswith(prefix) for prefix in expected_prefixes):
                 return line
         return ""
 
-    def wait_for_ready(self, timeout_sec: float = 5.0) -> None:
-        self.log(f"waiting for board on {self.port}")
+    def wait_for_ready(self, timeout_sec: float = 15.0) -> None:
+        print("waiting for board on /dev/ttyACM0")
         self.serial.reset_input_buffer()
-        ready = self._read_response(("READY",), timeout_sec)
-        if ready == "READY":
-            return
-        self.log("didn't receive READY, continuing anyway")
-
-    def send_line(self, line: str, expected_prefixes: tuple[str, ...], timeout_sec: float = 2.0) -> str:
-        self.serial.write((line + "\n").encode("utf-8"))
-        self.serial.flush()
-        return self._read_response(expected_prefixes, timeout_sec)
-
-    def publish_trajectory(self, value: int) -> None:
-        self.log(f">> TRAJ {value}")
-        response = self.send_line(f"TRAJ {value}", ("OK TRAJ", "ERR"), 5.0)
-        if not response:
-            self.log("no trajectory acknowledgement from board")
+        if self._read_response(("READY",), timeout_sec) != "READY":
+            print("didn't receive READY, continuing anyway")
 
     def ping(self) -> None:
-        self.log(">> PING")
-        response = self.send_line("PING", ("PONG", "ERR"), 5.0)
-        if not response:
-            self.log("no ping response from board")
+        print(">> PING")
+        self.serial.write(b"PING\n")
+        self.serial.flush()
+        if not self._read_response(("PONG", "ERR"), 5.0):
+            print("no ping response from board")
 
-    def toggle_mode(self) -> None:
-        self.mode = "orbit" if self.mode == "diagonal" else "diagonal"
-        self.log(f"q/e/z/c mode: {self.mode}")
+    def send_goal(self, joint_values: List[float]) -> bool:
+        payload = " ".join(f"{value:.6f}" for value in joint_values)
+        self.serial.write(f"GOAL {payload}\n".encode("utf-8"))
+        self.serial.flush()
+        return bool(self._read_response(("OK GOAL", "ERR"), 2.0))
+
+
+class LiteController:
+    PATH_TYPES = ("half1", "half2", "full")
+    SWING_TYPES = ("half1", "half2", "full1", "full2")
+    MOVING_TRAJECTORY_IDS = tuple(range(1, 15))
+    TRIPODS = ("A", "B")
+    STATIONARY_ID = 0
+
+    def __init__(self) -> None:
+        self.mode = "diagonal"
+        self.board = BoardClient()
+        self._init_state()
+        self.running = True
+
+    def _init_state(self) -> None:
+        self.limit_radius = 0.04
+        self.swing_height = 0.025
+        self.sample_rate = 0.02
+        self.min_angle = 1.0
+        self.startup_z = 0.05
+        self.startup_vel = 0.05
+        self.L1 = 0.0385
+        self.L2 = 0.0700
+        self.L3 = 0.1020
+
+        self.home_x = 0.110
+        self.home_y = 0.000
+        self.home_z = -0.050
+
+        self.linear_speed_y = 0.12
+        self.linear_speed_x = 0.12
+        self.diagonal_speed = 0.12
+        self.self_angular_speed = 0.75
+        self.orbit_angular_speed = 0.75
+        self.external_radius = 0.30
+
+        self.legs: List[LegInfo] = [
+            LegInfo(1, ("j11", "j12", "j13"), FramePose(-0.0535, 0.0900, 135.0), "A"),
+            LegInfo(2, ("j21", "j22", "j23"), FramePose(-0.0700, 0.0000, 180.0), "B"),
+            LegInfo(3, ("j31", "j32", "j33"), FramePose(-0.0535, -0.0900, -135.0), "A"),
+            LegInfo(4, ("j41", "j42", "j43"), FramePose(0.0535, 0.0900, 45.0), "B"),
+            LegInfo(5, ("j51", "j52", "j53"), FramePose(0.0700, 0.0000, 0.0), "A"),
+            LegInfo(6, ("j61", "j62", "j63"), FramePose(0.0535, -0.0900, -45.0), "B"),
+        ]
+
+        self.tip_paths = {
+            traj_id: {leg.leg_id: {name: [] for name in self.PATH_TYPES} for leg in self.legs}
+            for traj_id in self.MOVING_TRAJECTORY_IDS
+        }
+        self.tip_swings = {
+            traj_id: {leg.leg_id: {name: [] for name in self.SWING_TYPES} for leg in self.legs}
+            for traj_id in self.MOVING_TRAJECTORY_IDS
+        }
+        self.duration_points = {
+            traj_id: {tripod: {"half": 0, "full": 0} for tripod in self.TRIPODS}
+            for traj_id in self.MOVING_TRAJECTORY_IDS
+        }
+
+        self.current_joint_goal = self._initial_joint_goal()
+        self.requested_trajectory_id = self.STATIONARY_ID
+        self.active_trajectory_id = self.STATIONARY_ID
+        self.next_full_pull_tripod = "B"
+        self.prepared_trajectory_ids = set()
+
+    def _poll_keyboard(self) -> None:
+        ready, _, _ = select.select([sys.stdin], [], [], 0.0)
+        if not ready:
+            return
+        key = sys.stdin.read(1)
+        if not key:
+            return
+        k = key.lower()
+        if k == "x":
+            self.running = False
+            return
+        if k == "m":
+            self.mode = "orbit" if self.mode == "diagonal" else "diagonal"
+            print(f"q/e/z/c mode: {self.mode}")
+            return
+        value = self.map_key(k)
+        if value is not None:
+            self.requested_trajectory_id = value
 
     def map_key(self, key: str) -> int | None:
-        k = key.lower()
-        if k == "0":
+        if key == "0":
             return 0
-        if k in ROTATION_KEYS:
-            return ROTATION_KEYS[k]
-        if k in LINE_KEYS:
-            return LINE_KEYS[k]
+        if key in ROTATION_KEYS:
+            return ROTATION_KEYS[key]
+        if key in LINE_KEYS:
+            return LINE_KEYS[key]
         table = DIAGONAL_KEYS if self.mode == "diagonal" else ORBIT_KEYS
-        return table.get(k)
+        return table.get(key)
 
+    @staticmethod
+    def _clamp(value: float, min_value: float, max_value: float) -> float:
+        return max(min_value, min(max_value, value))
 
-def read_key(timeout_sec: float = 0.05) -> str:
-    ready, _, _ = select.select([sys.stdin], [], [], timeout_sec)
-    return sys.stdin.read(1) if ready else ""
+    @staticmethod
+    def _deg_to_rad(deg: float) -> float:
+        return deg * (math.pi / 180.0)
+
+    @staticmethod
+    def _opposite_tripod(tripod: str) -> str:
+        return "B" if tripod == "A" else "A"
+
+    def _tripod_legs(self, tripod: str) -> List[LegInfo]:
+        return [leg for leg in self.legs if leg.tripod == tripod]
+
+    def _initial_joint_goal(self) -> List[float]:
+        neutral_tip = Point3D(self.home_x, self.home_y, self.home_z)
+        values: List[float] = []
+        for _ in self.legs:
+            values.extend(self.IK(neutral_tip))
+        return values
+
+    def IK(self, tip: Point3D) -> Tuple[float, float, float]:
+        y = tip.y
+        x = tip.x
+        z = tip.z
+        j1 = -math.atan2(y, x)
+        x_prime = math.sqrt(x * x + y * y) - self.L1
+        d = math.sqrt(x_prime * x_prime + z * z)
+        d = self._clamp(d, abs(self.L2 - self.L3), self.L2 + self.L3)
+        alpha1 = math.atan2(-z, x_prime)
+        cos_alpha2 = self._clamp(
+            (self.L2 * self.L2 + d * d - self.L3 * self.L3) / (2.0 * self.L2 * d),
+            -1.0,
+            1.0,
+        )
+        alpha2 = math.acos(cos_alpha2)
+        cos_knee = self._clamp(
+            (self.L2 * self.L2 + self.L3 * self.L3 - d * d) / (2.0 * self.L2 * self.L3),
+            -1.0,
+            1.0,
+        )
+        return j1, alpha1 - alpha2, math.pi - math.acos(cos_knee)
+
+    def base_delta_to_tip_delta(
+        self,
+        base1: BasePose2D,
+        base2: BasePose2D,
+        leg: LegInfo,
+        tip_local_1: Point3D,
+    ) -> LocalDisplacement2D:
+        leg_theta = self._deg_to_rad(leg.frame_pose.theta_deg)
+        c1 = math.cos(base1.theta)
+        s1 = math.sin(base1.theta)
+        c2 = math.cos(base2.theta)
+        s2 = math.sin(base2.theta)
+        leg1_x = base1.x + c1 * leg.frame_pose.x - s1 * leg.frame_pose.y
+        leg1_y = base1.y + s1 * leg.frame_pose.x + c1 * leg.frame_pose.y
+        leg2_x = base2.x + c2 * leg.frame_pose.x - s2 * leg.frame_pose.y
+        leg2_y = base2.y + s2 * leg.frame_pose.x + c2 * leg.frame_pose.y
+        psi1 = base1.theta + leg_theta
+        psi2 = base2.theta + leg_theta
+        cp1 = math.cos(psi1)
+        sp1 = math.sin(psi1)
+        tip_world_x = leg1_x + cp1 * tip_local_1.x - sp1 * tip_local_1.y
+        tip_world_y = leg1_y + sp1 * tip_local_1.x + cp1 * tip_local_1.y
+        dx_world = tip_world_x - leg2_x
+        dy_world = tip_world_y - leg2_y
+        cp2 = math.cos(psi2)
+        sp2 = math.sin(psi2)
+        tip_local_2_x = cp2 * dx_world + sp2 * dy_world
+        tip_local_2_y = -sp2 * dx_world + cp2 * dy_world
+        return LocalDisplacement2D(tip_local_2_x - tip_local_1.x, tip_local_2_y - tip_local_1.y)
+
+    def master_path(self, t: float, trajectory_type_id: int) -> BasePose2D:
+        if 8 <= trajectory_type_id <= 14:
+            return self.master_path(-t, trajectory_type_id - 7)
+        if trajectory_type_id == 1:
+            return BasePose2D(0.0, self.linear_speed_y * t, 0.0)
+        if trajectory_type_id == 2:
+            return BasePose2D(self.linear_speed_x * t, 0.0, 0.0)
+        if trajectory_type_id == 3:
+            return BasePose2D(self.diagonal_speed * t, self.diagonal_speed * t, 0.0)
+        if trajectory_type_id == 4:
+            return BasePose2D(-self.diagonal_speed * t, self.diagonal_speed * t, 0.0)
+        if trajectory_type_id in (5, 6):
+            center_x = self.external_radius if trajectory_type_id == 5 else -self.external_radius
+            phi0 = math.pi if trajectory_type_id == 5 else 0.0
+            phi = phi0 + self.orbit_angular_speed * t
+            return BasePose2D(
+                center_x + self.external_radius * math.cos(phi),
+                self.external_radius * math.sin(phi),
+                self.orbit_angular_speed * t,
+            )
+        if trajectory_type_id == 7:
+            return BasePose2D(0.0, 0.0, -self.self_angular_speed * t)
+        return BasePose2D(0.0, 0.0, 0.0)
+
+    def pull_builder(self, tripod: str, trajectory_type_id: int, sign: int) -> Dict[int, List[Point3D]]:
+        selected_legs = self._tripod_legs(tripod)
+        home_tip = Point3D(self.home_x, self.home_y, self.home_z)
+        path_points = {leg.leg_id: [Point3D(home_tip.x, home_tip.y, home_tip.z)] for leg in selected_legs}
+        current_tip = {leg.leg_id: Point3D(home_tip.x, home_tip.y, home_tip.z) for leg in selected_legs}
+        start_xy = {leg.leg_id: (home_tip.x, home_tip.y) for leg in selected_legs}
+        t_prev = 0.0
+        base_prev = self.master_path(t_prev, trajectory_type_id)
+
+        for _ in range(10000):
+            t_curr = t_prev + sign * self.sample_rate
+            base_curr = self.master_path(t_curr, trajectory_type_id)
+            hit_limit = False
+            for leg in selected_legs:
+                tip_prev = current_tip[leg.leg_id]
+                delta = self.base_delta_to_tip_delta(base_prev, base_curr, leg, tip_prev)
+                tip_next = Point3D(tip_prev.x + delta.dx_local, tip_prev.y + delta.dy_local, home_tip.z)
+                current_tip[leg.leg_id] = tip_next
+                path_points[leg.leg_id].append(tip_next)
+                sx, sy = start_xy[leg.leg_id]
+                if math.sqrt((tip_next.x - sx) ** 2 + (tip_next.y - sy) ** 2) >= self.limit_radius:
+                    hit_limit = True
+            t_prev = t_curr
+            base_prev = base_curr
+            if hit_limit:
+                break
+        return path_points
+
+    def _resample_xy_path(self, path: List[Point3D], point_count: int) -> List[Point3D]:
+        point_count = max(point_count, 2)
+        if len(path) <= 1:
+            return [Point3D(path[0].x, path[0].y, path[0].z) for _ in range(point_count)]
+        cumulative = [0.0]
+        for idx in range(1, len(path)):
+            cumulative.append(
+                cumulative[-1] + math.sqrt((path[idx].x - path[idx - 1].x) ** 2 + (path[idx].y - path[idx - 1].y) ** 2)
+            )
+        total = cumulative[-1]
+        out: List[Point3D] = []
+        seg_idx = 0
+        for idx in range(point_count):
+            target = (float(idx) / float(point_count - 1)) * total
+            while seg_idx < len(cumulative) - 2 and cumulative[seg_idx + 1] < target:
+                seg_idx += 1
+            seg_start = cumulative[seg_idx]
+            seg_end = cumulative[seg_idx + 1]
+            local_s = 0.0 if seg_end <= seg_start else (target - seg_start) / (seg_end - seg_start)
+            p0 = path[seg_idx]
+            p1 = path[seg_idx + 1]
+            out.append(Point3D(
+                p0.x + local_s * (p1.x - p0.x),
+                p0.y + local_s * (p1.y - p0.y),
+                p0.z + local_s * (p1.z - p0.z),
+            ))
+        return out
+
+    def swing_builder(self, associated_path: List[Point3D], point_count: int) -> List[Point3D]:
+        source = list(reversed(associated_path))
+        shadow = self._resample_xy_path(source, point_count)
+        z_start = source[0].z
+        z_end = source[-1].z
+        out: List[Point3D] = []
+        n = len(shadow)
+        for idx, sample in enumerate(shadow):
+            s = float(idx) / float(n - 1) if n > 1 else 0.0
+            out.append(Point3D(sample.x, sample.y, (1.0 - s) * z_start + s * z_end + self.swing_height * math.sin(math.pi * s)))
+        return out
+
+    def _prepare_trajectory(self, trajectory_type_id: int) -> None:
+        if trajectory_type_id in self.prepared_trajectory_ids:
+            return
+        for tripod in self.TRIPODS:
+            positive = self.pull_builder(tripod, trajectory_type_id, +1)
+            negative = self.pull_builder(tripod, trajectory_type_id, -1)
+            for leg in self._tripod_legs(tripod):
+                leg_id = leg.leg_id
+                half1 = list(reversed(negative[leg_id]))
+                half2 = positive[leg_id]
+                full = half1 + half2[1:]
+                self.tip_paths[trajectory_type_id][leg_id]["half1"] = half1
+                self.tip_paths[trajectory_type_id][leg_id]["half2"] = half2
+                self.tip_paths[trajectory_type_id][leg_id]["full"] = full
+
+        for tripod in self.TRIPODS:
+            first_leg_id = self._tripod_legs(tripod)[0].leg_id
+            self.duration_points[trajectory_type_id][tripod]["half"] = max(
+                len(self.tip_paths[trajectory_type_id][first_leg_id]["half1"]), 2
+            )
+            self.duration_points[trajectory_type_id][tripod]["full"] = max(
+                len(self.tip_paths[trajectory_type_id][first_leg_id]["full"]), 2
+            )
+
+        for tripod in self.TRIPODS:
+            other = self._opposite_tripod(tripod)
+            half_points = self.duration_points[trajectory_type_id][other]["half"]
+            full_points = self.duration_points[trajectory_type_id][other]["full"]
+            for leg in self._tripod_legs(tripod):
+                leg_id = leg.leg_id
+                half1_path = self.tip_paths[trajectory_type_id][leg_id]["half1"]
+                half2_path = self.tip_paths[trajectory_type_id][leg_id]["half2"]
+                full_path = self.tip_paths[trajectory_type_id][leg_id]["full"]
+                self.tip_swings[trajectory_type_id][leg_id]["half1"] = self.swing_builder(half1_path, half_points)
+                self.tip_swings[trajectory_type_id][leg_id]["half2"] = self.swing_builder(half2_path, half_points)
+                full_swing = self.swing_builder(full_path, full_points)
+                self.tip_swings[trajectory_type_id][leg_id]["full2"] = full_swing[:half_points]
+                self.tip_swings[trajectory_type_id][leg_id]["full1"] = full_swing[half_points:]
+        self.prepared_trajectory_ids.add(trajectory_type_id)
+
+    def _send_joint_goal(self, joint_values: List[float]) -> bool:
+        if not self.board.send_goal(joint_values):
+            return False
+        time.sleep(self.sample_rate)
+        self._poll_keyboard()
+        return self.running
+
+    def startup_(self) -> bool:
+        startup_tip = Point3D(self.home_x, self.home_y, self.startup_z)
+        startup_joint_values: List[float] = []
+        for _ in self.legs:
+            startup_joint_values.extend(self.IK(startup_tip))
+        if not self._send_joint_goal(startup_joint_values):
+            return False
+        self.current_joint_goal = list(startup_joint_values)
+        time.sleep(2.0)
+        z_delta = self.home_z - self.startup_z
+        if abs(z_delta) <= 1e-9:
+            return True
+        z_step = abs(self.startup_vel) * self.sample_rate
+        step_count = max(1, math.ceil(abs(z_delta) / z_step))
+        min_angle_rad = math.radians(self.min_angle)
+        for step_idx in range(1, step_count + 1):
+            alpha = step_idx / step_count
+            tip = Point3D(self.home_x, self.home_y, self.startup_z + alpha * z_delta)
+            desired_flat: List[float] = []
+            for _ in self.legs:
+                desired_flat.extend(self.IK(tip))
+            changed = False
+            for joint_idx, desired in enumerate(desired_flat):
+                if abs(desired - self.current_joint_goal[joint_idx]) >= min_angle_rad:
+                    self.current_joint_goal[joint_idx] = desired
+                    changed = True
+            if changed and not self._send_joint_goal(self.current_joint_goal):
+                return False
+        return True
+
+    def _collect_phase_sequences(self, trajectory_type_id, tripod_a_mode, tripod_b_mode):
+        tripod_mode = {"A": tripod_a_mode, "B": tripod_b_mode}
+        out = {}
+        for leg in self.legs:
+            mode_kind, path_type = tripod_mode[leg.tripod]
+            store = self.tip_paths if mode_kind == "path" else self.tip_swings
+            out[leg.leg_id] = store[trajectory_type_id][leg.leg_id][path_type]
+        return out
+
+    def _execute_phase_by_tripod(self, trajectory_type_id, pull_tripod, pull_path_type, swing_type) -> bool:
+        tripod_a_mode = ("path", pull_path_type) if pull_tripod == "A" else ("swing", swing_type)
+        tripod_b_mode = ("path", pull_path_type) if pull_tripod == "B" else ("swing", swing_type)
+        leg_sequences = self._collect_phase_sequences(trajectory_type_id, tripod_a_mode, tripod_b_mode)
+        phase_points = max(len(seq) for seq in leg_sequences.values())
+        min_angle_rad = math.radians(self.min_angle)
+        for point_idx in range(phase_points):
+            desired_flat: List[float] = []
+            for leg in self.legs:
+                seq = leg_sequences[leg.leg_id]
+                sample = seq[point_idx] if point_idx < len(seq) else seq[-1]
+                desired_flat.extend(self.IK(sample))
+            for joint_idx, desired in enumerate(desired_flat):
+                if abs(desired - self.current_joint_goal[joint_idx]) >= min_angle_rad:
+                    self.current_joint_goal[joint_idx] = desired
+            if not self._send_joint_goal(self.current_joint_goal):
+                return False
+        return True
+
+    def coordinator(self) -> bool:
+        print("Controller ready (stationary)")
+        while self.running:
+            self._poll_keyboard()
+            if self.active_trajectory_id == self.STATIONARY_ID:
+                if self.requested_trajectory_id not in self.MOVING_TRAJECTORY_IDS:
+                    time.sleep(0.02)
+                    continue
+                self._prepare_trajectory(self.requested_trajectory_id)
+                self.active_trajectory_id = self.requested_trajectory_id
+                if not self._execute_phase_by_tripod(self.active_trajectory_id, "A", "half2", "half1"):
+                    return False
+                self.next_full_pull_tripod = "B"
+                continue
+
+            if self.requested_trajectory_id == self.STATIONARY_ID:
+                if not self._execute_phase_by_tripod(self.active_trajectory_id, self.next_full_pull_tripod, "half1", "half2"):
+                    return False
+                self.active_trajectory_id = self.STATIONARY_ID
+                continue
+
+            pull_tripod = self.next_full_pull_tripod
+            if not self._execute_phase_by_tripod(self.active_trajectory_id, pull_tripod, "half1", "full2"):
+                return False
+            requested_mid = self.requested_trajectory_id
+            second_half_trajectory = self.active_trajectory_id
+            if requested_mid in self.MOVING_TRAJECTORY_IDS and requested_mid != self.active_trajectory_id:
+                self._prepare_trajectory(requested_mid)
+                second_half_trajectory = requested_mid
+            if not self._execute_phase_by_tripod(second_half_trajectory, pull_tripod, "half2", "full1"):
+                return False
+            self.active_trajectory_id = second_half_trajectory
+            self.next_full_pull_tripod = self._opposite_tripod(pull_tripod)
+        return True
+
+    def run(self) -> int:
+        self.board.wait_for_ready()
+        self.board.ping()
+        if not self.startup_():
+            return 1
+        return 0 if self.coordinator() else 1
 
 
 def print_help() -> None:
-    print("Lite controller keyboard serial publisher")
+    print("Lite controller keyboard + gait controller")
     print("Stop: 0")
     print("Lines: w(+Y), d(+X), s(-Y), a(-X)")
     print("Self rotation: o(CCW), p(CW)")
@@ -120,32 +532,17 @@ def print_help() -> None:
 
 
 def main() -> None:
-    node = LiteControllerKeyboardPublisher()
+    controller = LiteController()
     old_settings = termios.tcgetattr(sys.stdin)
     print_help()
-
+    exit_code = 0
     try:
-        node.wait_for_ready()
-        node.ping()
         tty.setraw(sys.stdin.fileno())
-        running = True
-        while running:
-            key = read_key(0.03)
-            if not key:
-                continue
-            k = key.lower()
-            if k == "x":
-                running = False
-                continue
-            if k == "m":
-                node.toggle_mode()
-                continue
-            value = node.map_key(key)
-            if value is not None:
-                node.publish_trajectory(value)
+        exit_code = controller.run()
     finally:
         termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
-        node.close()
+        controller.board.close()
+    raise SystemExit(exit_code)
 
 
 if __name__ == "__main__":
