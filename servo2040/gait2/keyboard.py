@@ -87,21 +87,17 @@ class BoardClient:
             line = self.serial.readline().decode(errors="ignore").strip()
             if not line:
                 continue
-            print(f"<< {line}")
+            if line.startswith("ERR") or line.startswith("Traceback") or line.startswith("OK ") is False:
+                print(f"<< {line}")
             if line in ("PING",) or line.startswith("GOAL "):
                 continue
             if any(line.startswith(prefix) for prefix in expected_prefixes):
                 return line
         return ""
 
-    def wait_for_ready(self, timeout_sec: float = 15.0) -> None:
-        print("waiting for board on /dev/ttyACM0")
-        self.serial.reset_input_buffer()
-        if self._read_response(("READY",), timeout_sec) != "READY":
-            print("didn't receive READY, continuing anyway")
-
     def ping(self) -> None:
         print(">> PING")
+        self.serial.reset_input_buffer()
         self.serial.write(b"PING\n")
         self.serial.flush()
         if not self._read_response(("PONG", "ERR"), 5.0):
@@ -158,24 +154,33 @@ class LiteController:
             LegInfo(6, ("j61", "j62", "j63"), FramePose(0.0535, -0.0900, -45.0), "B"),
         ]
 
-        self.tip_paths = {
-            traj_id: {leg.leg_id: {name: [] for name in self.PATH_TYPES} for leg in self.legs}
-            for traj_id in self.MOVING_TRAJECTORY_IDS
-        }
-        self.tip_swings = {
-            traj_id: {leg.leg_id: {name: [] for name in self.SWING_TYPES} for leg in self.legs}
-            for traj_id in self.MOVING_TRAJECTORY_IDS
-        }
-        self.duration_points = {
-            traj_id: {tripod: {"half": 0, "full": 0} for tripod in self.TRIPODS}
-            for traj_id in self.MOVING_TRAJECTORY_IDS
-        }
+        self._reset_template_stores()
 
         self.current_joint_goal = self._initial_joint_goal()
         self.requested_trajectory_id = self.STATIONARY_ID
         self.active_trajectory_id = self.STATIONARY_ID
         self.next_full_pull_tripod = "B"
-        self.prepared_trajectory_ids = set()
+
+    def _new_leg_store(self, type_names: Tuple[str, ...]):
+        return {leg.leg_id: {type_name: [] for type_name in type_names} for leg in self.legs}
+
+    def _reset_template_stores(self) -> None:
+        self.tip_paths = {
+            traj_id: self._new_leg_store(self.PATH_TYPES) for traj_id in self.MOVING_TRAJECTORY_IDS
+        }
+        self.tip_swings = {
+            traj_id: self._new_leg_store(self.SWING_TYPES) for traj_id in self.MOVING_TRAJECTORY_IDS
+        }
+        self.joint_paths = {
+            traj_id: self._new_leg_store(self.PATH_TYPES) for traj_id in self.MOVING_TRAJECTORY_IDS
+        }
+        self.joint_swings = {
+            traj_id: self._new_leg_store(self.SWING_TYPES) for traj_id in self.MOVING_TRAJECTORY_IDS
+        }
+        self.duration_points = {
+            traj_id: {tripod: {"half": 0, "full": 0} for tripod in self.TRIPODS}
+            for traj_id in self.MOVING_TRAJECTORY_IDS
+        }
 
     def _poll_keyboard(self) -> None:
         ready, _, _ = select.select([sys.stdin], [], [], 0.0)
@@ -305,6 +310,8 @@ class LiteController:
         return BasePose2D(0.0, 0.0, 0.0)
 
     def pull_builder(self, tripod: str, trajectory_type_id: int, sign: int) -> Dict[int, List[Point3D]]:
+        if sign not in (-1, 1):
+            raise ValueError("sign must be +1 or -1")
         selected_legs = self._tripod_legs(tripod)
         home_tip = Point3D(self.home_x, self.home_y, self.home_z)
         path_points = {leg.leg_id: [Point3D(home_tip.x, home_tip.y, home_tip.z)] for leg in selected_legs}
@@ -332,16 +339,37 @@ class LiteController:
                 break
         return path_points
 
+    @staticmethod
+    def _copy_point(point: Point3D) -> Point3D:
+        return Point3D(point.x, point.y, point.z)
+
     def _resample_xy_path(self, path: List[Point3D], point_count: int) -> List[Point3D]:
         point_count = max(point_count, 2)
-        if len(path) <= 1:
-            return [Point3D(path[0].x, path[0].y, path[0].z) for _ in range(point_count)]
+        if not path:
+            home = Point3D(self.home_x, self.home_y, self.home_z)
+            return [home, home]
+        if len(path) == 1:
+            return [self._copy_point(path[0]) for _ in range(point_count)]
         cumulative = [0.0]
         for idx in range(1, len(path)):
             cumulative.append(
                 cumulative[-1] + math.sqrt((path[idx].x - path[idx - 1].x) ** 2 + (path[idx].y - path[idx - 1].y) ** 2)
             )
         total = cumulative[-1]
+        if total <= 1e-12:
+            start = path[0]
+            end = path[-1]
+            out: List[Point3D] = []
+            for idx in range(point_count):
+                s = float(idx) / float(point_count - 1)
+                out.append(
+                    Point3D(
+                        start.x + s * (end.x - start.x),
+                        start.y + s * (end.y - start.y),
+                        start.z + s * (end.z - start.z),
+                    )
+                )
+            return out
         out: List[Point3D] = []
         seg_idx = 0
         for idx in range(point_count):
@@ -362,6 +390,8 @@ class LiteController:
 
     def swing_builder(self, associated_path: List[Point3D], point_count: int) -> List[Point3D]:
         source = list(reversed(associated_path))
+        if not source:
+            source = [Point3D(self.home_x, self.home_y, self.home_z)]
         shadow = self._resample_xy_path(source, point_count)
         z_start = source[0].z
         z_end = source[-1].z
@@ -372,45 +402,72 @@ class LiteController:
             out.append(Point3D(sample.x, sample.y, (1.0 - s) * z_start + s * z_end + self.swing_height * math.sin(math.pi * s)))
         return out
 
-    def _prepare_trajectory(self, trajectory_type_id: int) -> None:
-        if trajectory_type_id in self.prepared_trajectory_ids:
+    def _build_tripod_templates(self, trajectory_type_id: int, tripod: str) -> None:
+        positive = self.pull_builder(tripod, trajectory_type_id, +1)
+        negative = self.pull_builder(tripod, trajectory_type_id, -1)
+        for leg in self._tripod_legs(tripod):
+            leg_id = leg.leg_id
+            positive_path = positive.get(leg_id, [Point3D(self.home_x, self.home_y, self.home_z)])
+            negative_path = negative.get(leg_id, [Point3D(self.home_x, self.home_y, self.home_z)])
+            half1 = list(reversed(negative_path))
+            half2 = positive_path
+            full = half1 + half2[1:]
+            self.tip_paths[trajectory_type_id][leg_id]["half1"] = half1
+            self.tip_paths[trajectory_type_id][leg_id]["half2"] = half2
+            self.tip_paths[trajectory_type_id][leg_id]["full"] = full
+
+    def _set_tripod_duration_points(self, trajectory_type_id: int, tripod: str) -> None:
+        tripod_legs = self._tripod_legs(tripod)
+        if not tripod_legs:
             return
-        for tripod in self.TRIPODS:
-            positive = self.pull_builder(tripod, trajectory_type_id, +1)
-            negative = self.pull_builder(tripod, trajectory_type_id, -1)
-            for leg in self._tripod_legs(tripod):
-                leg_id = leg.leg_id
-                half1 = list(reversed(negative[leg_id]))
-                half2 = positive[leg_id]
-                full = half1 + half2[1:]
-                self.tip_paths[trajectory_type_id][leg_id]["half1"] = half1
-                self.tip_paths[trajectory_type_id][leg_id]["half2"] = half2
-                self.tip_paths[trajectory_type_id][leg_id]["full"] = full
+        first_leg_id = tripod_legs[0].leg_id
+        half_points = len(self.tip_paths[trajectory_type_id][first_leg_id]["half1"])
+        full_points = len(self.tip_paths[trajectory_type_id][first_leg_id]["full"])
+        self.duration_points[trajectory_type_id][tripod]["half"] = max(half_points, 2)
+        self.duration_points[trajectory_type_id][tripod]["full"] = max(full_points, 2)
 
-        for tripod in self.TRIPODS:
-            first_leg_id = self._tripod_legs(tripod)[0].leg_id
-            self.duration_points[trajectory_type_id][tripod]["half"] = max(
-                len(self.tip_paths[trajectory_type_id][first_leg_id]["half1"]), 2
-            )
-            self.duration_points[trajectory_type_id][tripod]["full"] = max(
-                len(self.tip_paths[trajectory_type_id][first_leg_id]["full"]), 2
-            )
+    @staticmethod
+    def _split_swing_points(swing: List[Point3D], split_idx: int) -> Tuple[List[Point3D], List[Point3D]]:
+        split_idx = max(1, min(split_idx, len(swing) - 1))
+        return swing[:split_idx], swing[split_idx:]
 
-        for tripod in self.TRIPODS:
-            other = self._opposite_tripod(tripod)
-            half_points = self.duration_points[trajectory_type_id][other]["half"]
-            full_points = self.duration_points[trajectory_type_id][other]["full"]
-            for leg in self._tripod_legs(tripod):
+    def _build_tripod_swings(self, trajectory_type_id: int, tripod: str) -> None:
+        other = self._opposite_tripod(tripod)
+        half_points = self.duration_points[trajectory_type_id][other]["half"]
+        full_points = self.duration_points[trajectory_type_id][other]["full"]
+        for leg in self._tripod_legs(tripod):
+            leg_id = leg.leg_id
+            half1_path = self.tip_paths[trajectory_type_id][leg_id]["half1"]
+            half2_path = self.tip_paths[trajectory_type_id][leg_id]["half2"]
+            full_path = self.tip_paths[trajectory_type_id][leg_id]["full"]
+            self.tip_swings[trajectory_type_id][leg_id]["half1"] = self.swing_builder(half1_path, half_points)
+            self.tip_swings[trajectory_type_id][leg_id]["half2"] = self.swing_builder(half2_path, half_points)
+            full_swing = self.swing_builder(full_path, full_points)
+            full2, full1 = self._split_swing_points(full_swing, half_points)
+            self.tip_swings[trajectory_type_id][leg_id]["full2"] = full2
+            self.tip_swings[trajectory_type_id][leg_id]["full1"] = full1
+
+    def _build_all_templates(self) -> None:
+        for trajectory_type_id in self.MOVING_TRAJECTORY_IDS:
+            for tripod in self.TRIPODS:
+                self._build_tripod_templates(trajectory_type_id, tripod)
+            for tripod in self.TRIPODS:
+                self._set_tripod_duration_points(trajectory_type_id, tripod)
+            for tripod in self.TRIPODS:
+                self._build_tripod_swings(trajectory_type_id, tripod)
+
+    def _convert_tip_store_to_joint_store(self, src, dst, type_names: Tuple[str, ...]) -> None:
+        for trajectory_type_id in self.MOVING_TRAJECTORY_IDS:
+            for leg in self.legs:
                 leg_id = leg.leg_id
-                half1_path = self.tip_paths[trajectory_type_id][leg_id]["half1"]
-                half2_path = self.tip_paths[trajectory_type_id][leg_id]["half2"]
-                full_path = self.tip_paths[trajectory_type_id][leg_id]["full"]
-                self.tip_swings[trajectory_type_id][leg_id]["half1"] = self.swing_builder(half1_path, half_points)
-                self.tip_swings[trajectory_type_id][leg_id]["half2"] = self.swing_builder(half2_path, half_points)
-                full_swing = self.swing_builder(full_path, full_points)
-                self.tip_swings[trajectory_type_id][leg_id]["full2"] = full_swing[:half_points]
-                self.tip_swings[trajectory_type_id][leg_id]["full1"] = full_swing[half_points:]
-        self.prepared_trajectory_ids.add(trajectory_type_id)
+                for type_name in type_names:
+                    dst[trajectory_type_id][leg_id][type_name] = [
+                        self.IK(point) for point in src[trajectory_type_id][leg_id][type_name]
+                    ]
+
+    def p_to_joint_space(self) -> None:
+        self._convert_tip_store_to_joint_store(self.tip_paths, self.joint_paths, self.PATH_TYPES)
+        self._convert_tip_store_to_joint_store(self.tip_swings, self.joint_swings, self.SWING_TYPES)
 
     def _send_joint_goal(self, joint_values: List[float]) -> bool:
         if not self.board.send_goal(joint_values):
@@ -449,19 +506,19 @@ class LiteController:
                 return False
         return True
 
-    def _collect_phase_sequences(self, trajectory_type_id, tripod_a_mode, tripod_b_mode):
-        tripod_mode = {"A": tripod_a_mode, "B": tripod_b_mode}
-        out = {}
-        for leg in self.legs:
-            mode_kind, path_type = tripod_mode[leg.tripod]
-            store = self.tip_paths if mode_kind == "path" else self.tip_swings
-            out[leg.leg_id] = store[trajectory_type_id][leg.leg_id][path_type]
-        return out
+    def _execute_joint_sequences(
+        self,
+        phase_name: str,
+        leg_sequences: Dict[int, List[Tuple[float, float, float]]],
+    ) -> bool:
+        if not leg_sequences:
+            print(f"{phase_name}: no sequences")
+            return False
+        for leg_id, seq in leg_sequences.items():
+            if not seq:
+                print(f"{phase_name}: empty sequence for leg {leg_id}")
+                return False
 
-    def _execute_phase_by_tripod(self, trajectory_type_id, pull_tripod, pull_path_type, swing_type) -> bool:
-        tripod_a_mode = ("path", pull_path_type) if pull_tripod == "A" else ("swing", swing_type)
-        tripod_b_mode = ("path", pull_path_type) if pull_tripod == "B" else ("swing", swing_type)
-        leg_sequences = self._collect_phase_sequences(trajectory_type_id, tripod_a_mode, tripod_b_mode)
         phase_points = max(len(seq) for seq in leg_sequences.values())
         min_angle_rad = math.radians(self.min_angle)
         for point_idx in range(phase_points):
@@ -469,15 +526,69 @@ class LiteController:
             for leg in self.legs:
                 seq = leg_sequences[leg.leg_id]
                 sample = seq[point_idx] if point_idx < len(seq) else seq[-1]
-                desired_flat.extend(self.IK(sample))
+                desired_flat.extend(sample)
             for joint_idx, desired in enumerate(desired_flat):
                 if abs(desired - self.current_joint_goal[joint_idx]) >= min_angle_rad:
                     self.current_joint_goal[joint_idx] = desired
             if not self._send_joint_goal(self.current_joint_goal):
+                print(f"{phase_name}: failed at point {point_idx}")
                 return False
         return True
 
+    def _collect_phase_sequences(
+        self,
+        source_paths,
+        source_swings,
+        trajectory_type_id: int,
+        tripod_a_mode,
+        tripod_b_mode,
+    ):
+        tripod_mode = {"A": tripod_a_mode, "B": tripod_b_mode}
+        out = {}
+        for leg in self.legs:
+            mode_kind, path_type = tripod_mode[leg.tripod]
+            store = source_paths if mode_kind == "path" else source_swings
+            out[leg.leg_id] = store[trajectory_type_id][leg.leg_id][path_type]
+        return out
+
+    def _execute_standard_phase(
+        self,
+        phase_name: str,
+        trajectory_type_id: int,
+        tripod_a_mode,
+        tripod_b_mode,
+    ) -> bool:
+        leg_sequences = self._collect_phase_sequences(
+            source_paths=self.joint_paths[trajectory_type_id],
+            source_swings=self.joint_swings[trajectory_type_id],
+            tripod_a_mode=tripod_a_mode,
+            tripod_b_mode=tripod_b_mode,
+            trajectory_type_id=trajectory_type_id,
+        )
+        return self._execute_joint_sequences(phase_name, leg_sequences)
+
+    def _execute_phase_by_tripod(
+        self,
+        phase_name: str,
+        trajectory_type_id: int,
+        pull_tripod: str,
+        pull_path_type: str,
+        swing_type: str,
+    ) -> bool:
+        tripod_a_mode = ("path", pull_path_type) if pull_tripod == "A" else ("swing", swing_type)
+        tripod_b_mode = ("path", pull_path_type) if pull_tripod == "B" else ("swing", swing_type)
+        return self._execute_standard_phase(
+            phase_name=phase_name,
+            trajectory_type_id=trajectory_type_id,
+            tripod_a_mode=tripod_a_mode,
+            tripod_b_mode=tripod_b_mode,
+        )
+
     def coordinator(self) -> bool:
+        print("Building gait templates")
+        self._build_all_templates()
+        print("Converting templates to joint space")
+        self.p_to_joint_space()
         print("Controller ready (stationary)")
         while self.running:
             self._poll_keyboard()
@@ -485,35 +596,57 @@ class LiteController:
                 if self.requested_trajectory_id not in self.MOVING_TRAJECTORY_IDS:
                     time.sleep(0.02)
                     continue
-                self._prepare_trajectory(self.requested_trajectory_id)
                 self.active_trajectory_id = self.requested_trajectory_id
-                if not self._execute_phase_by_tripod(self.active_trajectory_id, "A", "half2", "half1"):
+                if not self._execute_phase_by_tripod(
+                    phase_name=f"start half-step t{self.active_trajectory_id}",
+                    trajectory_type_id=self.active_trajectory_id,
+                    pull_tripod="A",
+                    pull_path_type="half2",
+                    swing_type="half1",
+                ):
                     return False
                 self.next_full_pull_tripod = "B"
                 continue
 
             if self.requested_trajectory_id == self.STATIONARY_ID:
-                if not self._execute_phase_by_tripod(self.active_trajectory_id, self.next_full_pull_tripod, "half1", "half2"):
+                if not self._execute_phase_by_tripod(
+                    phase_name=f"final half-step t{self.active_trajectory_id}",
+                    trajectory_type_id=self.active_trajectory_id,
+                    pull_tripod=self.next_full_pull_tripod,
+                    pull_path_type="half1",
+                    swing_type="half2",
+                ):
                     return False
                 self.active_trajectory_id = self.STATIONARY_ID
+                self.requested_trajectory_id = self.STATIONARY_ID
                 continue
 
             pull_tripod = self.next_full_pull_tripod
-            if not self._execute_phase_by_tripod(self.active_trajectory_id, pull_tripod, "half1", "full2"):
+            if not self._execute_phase_by_tripod(
+                phase_name=f"full-step-1 t{self.active_trajectory_id}",
+                trajectory_type_id=self.active_trajectory_id,
+                pull_tripod=pull_tripod,
+                pull_path_type="half1",
+                swing_type="full2",
+            ):
                 return False
             requested_mid = self.requested_trajectory_id
             second_half_trajectory = self.active_trajectory_id
             if requested_mid in self.MOVING_TRAJECTORY_IDS and requested_mid != self.active_trajectory_id:
-                self._prepare_trajectory(requested_mid)
                 second_half_trajectory = requested_mid
-            if not self._execute_phase_by_tripod(second_half_trajectory, pull_tripod, "half2", "full1"):
+            if not self._execute_phase_by_tripod(
+                phase_name=f"full-step-2 t{second_half_trajectory}",
+                trajectory_type_id=second_half_trajectory,
+                pull_tripod=pull_tripod,
+                pull_path_type="half2",
+                swing_type="full1",
+            ):
                 return False
             self.active_trajectory_id = second_half_trajectory
             self.next_full_pull_tripod = self._opposite_tripod(pull_tripod)
         return True
 
     def run(self) -> int:
-        self.board.wait_for_ready()
         self.board.ping()
         if not self.startup_():
             return 1
