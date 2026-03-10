@@ -3,6 +3,7 @@
 import gc
 import math
 import sys
+import time
 import uselect
 
 from servo import ServoCluster, servo2040
@@ -151,6 +152,7 @@ class GoalReceiver:
 
 
 def main() -> None:
+    time.sleep(5.0)
     GoalReceiver().run()
 
 

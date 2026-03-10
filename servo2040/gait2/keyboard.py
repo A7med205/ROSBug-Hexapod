@@ -95,13 +95,21 @@ class BoardClient:
                 return line
         return ""
 
-    def ping(self) -> None:
+    def ping(self, timeout_sec: float = 1.0) -> bool:
         print(">> PING")
         self.serial.reset_input_buffer()
         self.serial.write(b"PING\n")
         self.serial.flush()
-        if not self._read_response(("PONG", "ERR"), 5.0):
-            print("no ping response from board")
+        return bool(self._read_response(("PONG", "ERR"), timeout_sec))
+
+    def wait_for_ping(self, total_timeout_sec: float = 8.0, retry_interval_sec: float = 0.25) -> bool:
+        deadline = time.monotonic() + total_timeout_sec
+        while time.monotonic() < deadline:
+            if self.ping(timeout_sec=min(1.0, max(0.1, deadline - time.monotonic()))):
+                return True
+            time.sleep(retry_interval_sec)
+        print("no ping response from board")
+        return False
 
     def send_goal(self, joint_values: List[float]) -> bool:
         payload = " ".join(f"{value:.6f}" for value in joint_values)
@@ -200,6 +208,7 @@ class LiteController:
         value = self.map_key(k)
         if value is not None:
             self.requested_trajectory_id = value
+            print(f"trajectory -> {value}")
 
     def map_key(self, key: str) -> int | None:
         if key == "0":
@@ -471,6 +480,7 @@ class LiteController:
 
     def _send_joint_goal(self, joint_values: List[float]) -> bool:
         if not self.board.send_goal(joint_values):
+            print("goal send failed")
             return False
         time.sleep(self.sample_rate)
         self._poll_keyboard()
@@ -539,7 +549,6 @@ class LiteController:
         self,
         source_paths,
         source_swings,
-        trajectory_type_id: int,
         tripod_a_mode,
         tripod_b_mode,
     ):
@@ -548,7 +557,7 @@ class LiteController:
         for leg in self.legs:
             mode_kind, path_type = tripod_mode[leg.tripod]
             store = source_paths if mode_kind == "path" else source_swings
-            out[leg.leg_id] = store[trajectory_type_id][leg.leg_id][path_type]
+            out[leg.leg_id] = store[leg.leg_id][path_type]
         return out
 
     def _execute_standard_phase(
@@ -563,7 +572,6 @@ class LiteController:
             source_swings=self.joint_swings[trajectory_type_id],
             tripod_a_mode=tripod_a_mode,
             tripod_b_mode=tripod_b_mode,
-            trajectory_type_id=trajectory_type_id,
         )
         return self._execute_joint_sequences(phase_name, leg_sequences)
 
@@ -597,6 +605,7 @@ class LiteController:
                     time.sleep(0.02)
                     continue
                 self.active_trajectory_id = self.requested_trajectory_id
+                print(f"starting trajectory {self.active_trajectory_id}")
                 if not self._execute_phase_by_tripod(
                     phase_name=f"start half-step t{self.active_trajectory_id}",
                     trajectory_type_id=self.active_trajectory_id,
@@ -609,6 +618,7 @@ class LiteController:
                 continue
 
             if self.requested_trajectory_id == self.STATIONARY_ID:
+                print(f"stopping trajectory {self.active_trajectory_id}")
                 if not self._execute_phase_by_tripod(
                     phase_name=f"final half-step t{self.active_trajectory_id}",
                     trajectory_type_id=self.active_trajectory_id,
@@ -647,7 +657,8 @@ class LiteController:
         return True
 
     def run(self) -> int:
-        self.board.ping()
+        if not self.board.wait_for_ping():
+            return 1
         if not self.startup_():
             return 1
         return 0 if self.coordinator() else 1
