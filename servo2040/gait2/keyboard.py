@@ -136,7 +136,7 @@ class LiteController:
         self.swing_height = 0.025
         self.sample_rate = 0.02
         self.min_angle = 1.0
-        self.startup_z = 0.05
+        self.startup_z = 0.01
         self.startup_vel = 0.05
         self.L1 = 0.0385
         self.L2 = 0.0700
@@ -146,11 +146,11 @@ class LiteController:
         self.home_y = 0.000
         self.home_z = -0.050
 
-        self.linear_speed_y = 0.12
-        self.linear_speed_x = 0.12
-        self.diagonal_speed = 0.12
-        self.self_angular_speed = 0.75
-        self.orbit_angular_speed = 0.75
+        self.linear_speed_y = 0.2
+        self.linear_speed_x = 0.2
+        self.diagonal_speed = 0.2
+        self.self_angular_speed = 0.8
+        self.orbit_angular_speed = 0.60
         self.external_radius = 0.30
 
         self.legs: List[LegInfo] = [
