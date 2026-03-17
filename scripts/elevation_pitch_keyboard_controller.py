@@ -1,10 +1,6 @@
 #!/usr/bin/env python3
 
 import math
-import select
-import sys
-import termios
-import tty
 from dataclasses import dataclass
 from typing import Dict, List, Tuple
 
@@ -39,36 +35,29 @@ class Point3D:
 
 
 @dataclass(frozen=True)
-class BasePoseZPitch:
+class BasePose3D:
+    x: float
+    y: float
     z: float
+    roll: float
     pitch: float
-
-
-@dataclass(frozen=True)
-class LocalDisplacementZ:
-    dz_local: float
+    yaw: float
 
 
 class ElevationPitchKeyboardController(Node):
     def __init__(self) -> None:
-        super().__init__("elevation_pitch_keyboard_controller")
+        super().__init__("elevation_pitch_pose_controller")
 
-        # Hardcoded per-input steps.
-        self.distance_per_input = 0.0006
-        self.angle_per_input = 0.007
-        self.goal_time_sec = 0.02
+        self.goal_time_sec = float(self.declare_parameter("goal_time_sec", 0.05).value)
 
-        # IK link lengths.
         self.L1 = 0.0385
         self.L2 = 0.0700
         self.L3 = 0.1020
 
-        # Neutral tip in leg-local frame.
         self.home_x = 0.110
         self.home_y = 0.000
         self.home_z = -0.050
 
-        # Joint limits: j1/j2/j3 for all legs.
         self.joint_mins = [-2.0 * math.pi, -2.0 * math.pi, -2.0 * math.pi]
         self.joint_maxs = [2.0 * math.pi, 2.0 * math.pi, 2.0 * math.pi]
 
@@ -79,6 +68,8 @@ class ElevationPitchKeyboardController(Node):
             ).value
         )
         self.wait_timeout_sec = float(self.declare_parameter("wait_timeout_sec", 10.0).value)
+        pose_text = str(self.declare_parameter("pose", "0,0,0,0,0,0").value)
+        self.target_base_pose = self._parse_pose_parameter(pose_text)
 
         self.legs: List[LegInfo] = [
             LegInfo(1, ("jl11", "jl12", "jl13"), FramePose(-0.0535, 0.0900, 135.0), "A"),
@@ -89,14 +80,11 @@ class ElevationPitchKeyboardController(Node):
             LegInfo(6, ("jl61", "jl62", "jl63"), FramePose(0.0535, -0.0900, -45.0), "B"),
         ]
         self.joint_names_flat = [joint for leg in self.legs for joint in leg.joint_names]
-
-        self.current_tip_positions: Dict[int, Point3D] = {
+        self.neutral_tip_positions: Dict[int, Point3D] = {
             leg.leg_id: Point3D(self.home_x, self.home_y, self.home_z)
             for leg in self.legs
         }
-        self.current_joint_values: Dict[int, Tuple[float, float, float]] = {}
-        self.current_base_pose = BasePoseZPitch(z=0.0, pitch=0.0)
-        self.mode = "elevation"  # default mode
+        self.neutral_base_pose = BasePose3D(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
         self.action_client = ActionClient(self, FollowJointTrajectory, self.action_name)
 
@@ -107,6 +95,119 @@ class ElevationPitchKeyboardController(Node):
     @staticmethod
     def _deg_to_rad(deg: float) -> float:
         return deg * (math.pi / 180.0)
+
+    @staticmethod
+    def _vec_add(a: Tuple[float, float, float], b: Tuple[float, float, float]) -> Tuple[float, float, float]:
+        return (a[0] + b[0], a[1] + b[1], a[2] + b[2])
+
+    @staticmethod
+    def _vec_sub(a: Tuple[float, float, float], b: Tuple[float, float, float]) -> Tuple[float, float, float]:
+        return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
+
+    @staticmethod
+    def _mat_vec(
+        mat: Tuple[Tuple[float, float, float], Tuple[float, float, float], Tuple[float, float, float]],
+        vec: Tuple[float, float, float],
+    ) -> Tuple[float, float, float]:
+        return (
+            mat[0][0] * vec[0] + mat[0][1] * vec[1] + mat[0][2] * vec[2],
+            mat[1][0] * vec[0] + mat[1][1] * vec[1] + mat[1][2] * vec[2],
+            mat[2][0] * vec[0] + mat[2][1] * vec[1] + mat[2][2] * vec[2],
+        )
+
+    @staticmethod
+    def _mat_mul(
+        a: Tuple[Tuple[float, float, float], Tuple[float, float, float], Tuple[float, float, float]],
+        b: Tuple[Tuple[float, float, float], Tuple[float, float, float], Tuple[float, float, float]],
+    ) -> Tuple[Tuple[float, float, float], Tuple[float, float, float], Tuple[float, float, float]]:
+        return (
+            (
+                a[0][0] * b[0][0] + a[0][1] * b[1][0] + a[0][2] * b[2][0],
+                a[0][0] * b[0][1] + a[0][1] * b[1][1] + a[0][2] * b[2][1],
+                a[0][0] * b[0][2] + a[0][1] * b[1][2] + a[0][2] * b[2][2],
+            ),
+            (
+                a[1][0] * b[0][0] + a[1][1] * b[1][0] + a[1][2] * b[2][0],
+                a[1][0] * b[0][1] + a[1][1] * b[1][1] + a[1][2] * b[2][1],
+                a[1][0] * b[0][2] + a[1][1] * b[1][2] + a[1][2] * b[2][2],
+            ),
+            (
+                a[2][0] * b[0][0] + a[2][1] * b[1][0] + a[2][2] * b[2][0],
+                a[2][0] * b[0][1] + a[2][1] * b[1][1] + a[2][2] * b[2][1],
+                a[2][0] * b[0][2] + a[2][1] * b[1][2] + a[2][2] * b[2][2],
+            ),
+        )
+
+    @staticmethod
+    def _mat_transpose(
+        mat: Tuple[Tuple[float, float, float], Tuple[float, float, float], Tuple[float, float, float]]
+    ) -> Tuple[Tuple[float, float, float], Tuple[float, float, float], Tuple[float, float, float]]:
+        return (
+            (mat[0][0], mat[1][0], mat[2][0]),
+            (mat[0][1], mat[1][1], mat[2][1]),
+            (mat[0][2], mat[1][2], mat[2][2]),
+        )
+
+    @staticmethod
+    def _mat_sub_identity(
+        mat: Tuple[Tuple[float, float, float], Tuple[float, float, float], Tuple[float, float, float]]
+    ) -> Tuple[Tuple[float, float, float], Tuple[float, float, float], Tuple[float, float, float]]:
+        return (
+            (mat[0][0] - 1.0, mat[0][1], mat[0][2]),
+            (mat[1][0], mat[1][1] - 1.0, mat[1][2]),
+            (mat[2][0], mat[2][1], mat[2][2] - 1.0),
+        )
+
+    @staticmethod
+    def _rotation_from_rpy(
+        roll: float, pitch: float, yaw: float
+    ) -> Tuple[Tuple[float, float, float], Tuple[float, float, float], Tuple[float, float, float]]:
+        cr = math.cos(roll)
+        sr = math.sin(roll)
+        cp = math.cos(pitch)
+        sp = math.sin(pitch)
+        cy = math.cos(yaw)
+        sy = math.sin(yaw)
+        return (
+            (cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr),
+            (sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr),
+            (-sp, cp * sr, cp * cr),
+        )
+
+    def _rotation_leg_to_body(
+        self, leg: LegInfo
+    ) -> Tuple[Tuple[float, float, float], Tuple[float, float, float], Tuple[float, float, float]]:
+        yaw = self._deg_to_rad(leg.frame_pose.theta_deg)
+        cy = math.cos(yaw)
+        sy = math.sin(yaw)
+        return (
+            (cy, -sy, 0.0),
+            (sy, cy, 0.0),
+            (0.0, 0.0, 1.0),
+        )
+
+    def _parse_pose_parameter(self, pose_text: str) -> BasePose3D:
+        values = [item.strip() for item in pose_text.split(",")]
+        if len(values) != 6:
+            raise ValueError(
+                "pose must contain 6 comma-separated values: x,y,z,roll_deg,pitch_deg,yaw_deg"
+            )
+
+        try:
+            x, y, z, roll_deg, pitch_deg, yaw_deg = (float(value) for value in values)
+        except ValueError as exc:
+            raise ValueError(
+                "pose values must be numeric: x,y,z,roll_deg,pitch_deg,yaw_deg"
+            ) from exc
+
+        return BasePose3D(
+            x=x,
+            y=y,
+            z=z,
+            roll=self._deg_to_rad(roll_deg),
+            pitch=self._deg_to_rad(pitch_deg),
+            yaw=self._deg_to_rad(yaw_deg),
+        )
 
     def IK(self, tip: Point3D) -> Tuple[float, float, float]:
         y = tip.y
@@ -140,40 +241,34 @@ class ElevationPitchKeyboardController(Node):
         j3 = math.pi - math.acos(cos_knee)
         return j1, j2, j3
 
-    def base_delta_to_tip_delta_z(
+    def base_delta_to_tip_delta_3d(
         self,
-        base1: BasePoseZPitch,
-        base2: BasePoseZPitch,
+        base1: BasePose3D,
+        base2: BasePose3D,
         leg: LegInfo,
         tip_local_1: Point3D,
-    ) -> LocalDisplacementZ:
-        # Similar idea to base_delta_to_tip_delta but reduced to vertical motion.
-        # Pitch is rotation about base x-axis; use tip forward offset in base frame.
-        leg_yaw = self._deg_to_rad(leg.frame_pose.theta_deg)
-        y_tip_in_base = (
-            leg.frame_pose.y
-            + math.sin(leg_yaw) * tip_local_1.x
-            + math.cos(leg_yaw) * tip_local_1.y
+    ) -> Point3D:
+        r_world_body1 = self._rotation_from_rpy(base1.roll, base1.pitch, base1.yaw)
+        r_world_body2 = self._rotation_from_rpy(base2.roll, base2.pitch, base2.yaw)
+        r_body1_world = self._mat_transpose(r_world_body1)
+
+        delta_world = (base2.x - base1.x, base2.y - base1.y, base2.z - base1.z)
+        delta_body = self._mat_vec(r_body1_world, delta_world)
+        r_body = self._mat_mul(r_body1_world, r_world_body2)
+
+        r_bl = self._rotation_leg_to_body(leg)
+        r_lb = self._mat_transpose(r_bl)
+        mount_body = (leg.frame_pose.x, leg.frame_pose.y, 0.0)
+
+        delta_leg = self._mat_vec(
+            r_lb,
+            self._vec_add(delta_body, self._mat_vec(self._mat_sub_identity(r_body), mount_body)),
         )
+        r_leg = self._mat_mul(self._mat_mul(r_lb, r_body), r_bl)
 
-        tip_world_z = (
-            base1.z
-            + y_tip_in_base * math.sin(base1.pitch)
-            + tip_local_1.z * math.cos(base1.pitch)
-        )
-
-        c2 = math.cos(base2.pitch)
-        if abs(c2) < 1e-6:
-            c2 = 1e-6 if c2 >= 0.0 else -1e-6
-        tip_local_2_z = (tip_world_z - base2.z - y_tip_in_base * math.sin(base2.pitch)) / c2
-        return LocalDisplacementZ(dz_local=(tip_local_2_z - tip_local_1.z))
-
-    def _initialize_neutral_joint_values(self) -> None:
-        for leg in self.legs:
-            tip = self.current_tip_positions[leg.leg_id]
-            j1, j2, j3 = self.IK(tip)
-            self.current_joint_values[leg.leg_id] = (j1, j2, j3)
-        self.get_logger().info("Initialized neutral tip and joint values")
+        tip1 = (tip_local_1.x, tip_local_1.y, tip_local_1.z)
+        tip2 = self._mat_vec(self._mat_transpose(r_leg), self._vec_sub(tip1, delta_leg))
+        return Point3D(tip2[0] - tip1[0], tip2[1] - tip1[1], tip2[2] - tip1[2])
 
     def _within_joint_limits(self, joints: Tuple[float, float, float]) -> bool:
         for idx, value in enumerate(joints):
@@ -219,89 +314,7 @@ class ElevationPitchKeyboardController(Node):
             return False
         return True
 
-    def _target_pose_one_step(self, direction: int) -> BasePoseZPitch:
-        if self.mode == "elevation":
-            dz = direction * self.distance_per_input
-            return BasePoseZPitch(
-                z=self.current_base_pose.z + dz,
-                pitch=self.current_base_pose.pitch,
-            )
-
-        dp = direction * self.angle_per_input
-        return BasePoseZPitch(
-            z=self.current_base_pose.z,
-            pitch=self.current_base_pose.pitch + dp,
-        )
-
-    def _target_pose_return_one_step(self) -> BasePoseZPitch:
-        dz_step = self.distance_per_input
-        dp_step = self.angle_per_input
-
-        def step_to_zero(value: float, step: float) -> float:
-            if abs(value) <= step:
-                return 0.0
-            return value - math.copysign(step, value)
-
-        return BasePoseZPitch(
-            z=step_to_zero(self.current_base_pose.z, dz_step),
-            pitch=step_to_zero(self.current_base_pose.pitch, dp_step),
-        )
-
-    def _apply_one_iteration(self, target_pose: BasePoseZPitch) -> bool:
-        candidate_tips: Dict[int, Point3D] = {}
-        candidate_joints: Dict[int, Tuple[float, float, float]] = {}
-
-        for leg in self.legs:
-            tip_prev = self.current_tip_positions[leg.leg_id]
-            dz = self.base_delta_to_tip_delta_z(self.current_base_pose, target_pose, leg, tip_prev)
-            tip_next = Point3D(tip_prev.x, tip_prev.y, tip_prev.z + dz.dz_local)
-            joints = self.IK(tip_next)
-            if not self._within_joint_limits(joints):
-                self.get_logger().warn(
-                    f"Joint limits exceeded for leg {leg.leg_id}; step skipped"
-                )
-                return False
-            candidate_tips[leg.leg_id] = tip_next
-            candidate_joints[leg.leg_id] = joints
-
-        goal_vector = self._build_joint_vector(candidate_joints)
-        if not self._send_joint_goal(goal_vector):
-            return False
-
-        self.current_tip_positions = candidate_tips
-        self.current_joint_values = candidate_joints
-        self.current_base_pose = target_pose
-        self.get_logger().info(
-            f"Applied 1 step: mode={self.mode}, z={self.current_base_pose.z:.4f}, "
-            f"pitch={self.current_base_pose.pitch:.4f} rad"
-        )
-        return True
-
-    def _is_base_neutral(self) -> bool:
-        return abs(self.current_base_pose.z) <= 1e-9 and abs(self.current_base_pose.pitch) <= 1e-9
-
-    def _return_to_neutral_auto(self) -> None:
-        if self._is_base_neutral():
-            self.get_logger().info("Base already at neutral pose")
-            return
-
-        max_steps = 10000
-        for _ in range(max_steps):
-            if self._is_base_neutral():
-                self.get_logger().info("Reached neutral base pose")
-                return
-            target = self._target_pose_return_one_step()
-            if not self._apply_one_iteration(target):
-                self.get_logger().warn("Auto-return stopped early due to failed step")
-                return
-
-        self.get_logger().warn("Auto-return reached max steps before neutral pose")
-
-    def _toggle_mode(self) -> None:
-        self.mode = "pitch" if self.mode == "elevation" else "elevation"
-        self.get_logger().info(f"Mode changed to: {self.mode}")
-
-    def run_keyboard_loop(self) -> int:
+    def send_pose_goal(self) -> int:
         self.get_logger().info(f"Waiting for action server: {self.action_name}")
         if not self.action_client.wait_for_server(timeout_sec=self.wait_timeout_sec):
             self.get_logger().error(
@@ -309,55 +322,53 @@ class ElevationPitchKeyboardController(Node):
             )
             return 1
 
-        self._initialize_neutral_joint_values()
+        candidate_joints: Dict[int, Tuple[float, float, float]] = {}
+        for leg in self.legs:
+            tip_prev = self.neutral_tip_positions[leg.leg_id]
+            delta = self.base_delta_to_tip_delta_3d(
+                self.neutral_base_pose,
+                self.target_base_pose,
+                leg,
+                tip_prev,
+            )
+            tip_next = Point3D(
+                tip_prev.x + delta.x,
+                tip_prev.y + delta.y,
+                tip_prev.z + delta.z,
+            )
+            joints = self.IK(tip_next)
+            if not self._within_joint_limits(joints):
+                self.get_logger().error(
+                    f"Joint limits exceeded for leg {leg.leg_id} at requested pose"
+                )
+                return 2
+            candidate_joints[leg.leg_id] = joints
 
-        print("Elevation/Pitch keyboard controller")
-        print("m: toggle mode (elevation/pitch)")
-        print("i: + direction (up / pitch+)")
-        print("k: - direction (down / pitch-)")
-        print("r: auto-return to neutral base pose")
-        print("q: quit")
-
-        old_settings = termios.tcgetattr(sys.stdin)
-        try:
-            tty.setraw(sys.stdin.fileno())
-            while rclpy.ok():
-                rclpy.spin_once(self, timeout_sec=0.01)
-                ready, _, _ = select.select([sys.stdin], [], [], 0.05)
-                if not ready:
-                    continue
-
-                key = sys.stdin.read(1)
-                if key == "q":
-                    return 0
-                if key == "m":
-                    self._toggle_mode()
-                    continue
-                if key == "i":
-                    self._apply_one_iteration(self._target_pose_one_step(+1))
-                    continue
-                if key == "k":
-                    self._apply_one_iteration(self._target_pose_one_step(-1))
-                    continue
-                if key == "r":
-                    self._return_to_neutral_auto()
-                    continue
-        finally:
-            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
-        return 0
+        self.get_logger().info(
+            "Sending snap goal for pose "
+            f"x={self.target_base_pose.x:.3f}, y={self.target_base_pose.y:.3f}, z={self.target_base_pose.z:.3f}, "
+            f"roll={math.degrees(self.target_base_pose.roll):.1f} deg, "
+            f"pitch={math.degrees(self.target_base_pose.pitch):.1f} deg, "
+            f"yaw={math.degrees(self.target_base_pose.yaw):.1f} deg"
+        )
+        return 0 if self._send_joint_goal(self._build_joint_vector(candidate_joints)) else 3
 
 
 def main() -> None:
     rclpy.init()
-    node = ElevationPitchKeyboardController()
     exit_code = 0
+    node = None
     try:
-        exit_code = node.run_keyboard_loop()
+        node = ElevationPitchKeyboardController()
+        exit_code = node.send_pose_goal()
+    except ValueError as exc:
+        print(f"Invalid pose parameter: {exc}")
+        exit_code = 2
     except KeyboardInterrupt:
-        node.get_logger().info("Interrupted by user")
         exit_code = 130
     finally:
-        node.destroy_node()
+        if node is not None:
+            node.destroy_node()
         rclpy.shutdown()
     raise SystemExit(exit_code)
 
