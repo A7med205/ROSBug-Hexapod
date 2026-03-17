@@ -25,25 +25,33 @@ LocalDisplacement2D PathBuilder::tip_delta(const BasePose2D & base1, const BaseP
 
   const std::size_t idx = static_cast<std::size_t>(leg_id - 1);
   const auto & leg = state_.legs[idx];
-  const double leg_theta = Kinematics::deg_to_rad(leg.frame_pose.theta);
-  const double c1 = std::cos(base1.theta), s1 = std::sin(base1.theta), c2 = std::cos(base2.theta), s2 = std::sin(base2.theta);
-
-  const double leg1_x = base1.x + c1 * leg.frame_pose.x - s1 * leg.frame_pose.y;
-  const double leg1_y = base1.y + s1 * leg.frame_pose.x + c1 * leg.frame_pose.y;
-  const double leg2_x = base2.x + c2 * leg.frame_pose.x - s2 * leg.frame_pose.y;
-  const double leg2_y = base2.y + s2 * leg.frame_pose.x + c2 * leg.frame_pose.y;
-
-  const double psi1 = base1.theta + leg_theta, psi2 = base2.theta + leg_theta;
   const auto & tip_local_1 = state_.path_tip_state[idx];
+  const double leg_theta = Kinematics::deg_to_rad(leg.frame_pose.theta);
+  const double body_rotation = base2.theta - base1.theta;
 
-  const double cp1 = std::cos(psi1), sp1 = std::sin(psi1);
-  const double tip_world_x = leg1_x + cp1 * tip_local_1.x - sp1 * tip_local_1.y;
-  const double tip_world_y = leg1_y + sp1 * tip_local_1.x + cp1 * tip_local_1.y;
+  const double c_base1 = std::cos(base1.theta);
+  const double s_base1 = std::sin(base1.theta);
+  const double delta_world_x = base2.x - base1.x;
+  const double delta_world_y = base2.y - base1.y;
+  const double delta_body_x = c_base1 * delta_world_x + s_base1 * delta_world_y;
+  const double delta_body_y = -s_base1 * delta_world_x + c_base1 * delta_world_y;
 
-  const double dx_world = tip_world_x - leg2_x, dy_world = tip_world_y - leg2_y;
-  const double cp2 = std::cos(psi2), sp2 = std::sin(psi2);
-  const double tip_local_2_x = cp2 * dx_world + sp2 * dy_world;
-  const double tip_local_2_y = -sp2 * dx_world + cp2 * dy_world;
+  const double c_body = std::cos(body_rotation);
+  const double s_body = std::sin(body_rotation);
+  const double mount_rot_x = c_body * leg.frame_pose.x - s_body * leg.frame_pose.y;
+  const double mount_rot_y = s_body * leg.frame_pose.x + c_body * leg.frame_pose.y;
+
+  const double c_leg = std::cos(leg_theta);
+  const double s_leg = std::sin(leg_theta);
+  const double delta_leg_x = c_leg * (delta_body_x + mount_rot_x - leg.frame_pose.x) +
+    s_leg * (delta_body_y + mount_rot_y - leg.frame_pose.y);
+  const double delta_leg_y = -s_leg * (delta_body_x + mount_rot_x - leg.frame_pose.x) +
+    c_leg * (delta_body_y + mount_rot_y - leg.frame_pose.y);
+
+  const double tip_shift_x = tip_local_1.x - delta_leg_x;
+  const double tip_shift_y = tip_local_1.y - delta_leg_y;
+  const double tip_local_2_x = c_body * tip_shift_x + s_body * tip_shift_y;
+  const double tip_local_2_y = -s_body * tip_shift_x + c_body * tip_shift_y;
 
   return {tip_local_2_x - tip_local_1.x, tip_local_2_y - tip_local_1.y};
 }

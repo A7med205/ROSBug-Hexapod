@@ -199,30 +199,33 @@ class LiteGaitController(Node):
         tip_local_1: Point3D,
     ) -> LocalDisplacement2D:
         leg_theta = self._deg_to_rad(leg.frame_pose.theta_deg)
-        c1 = math.cos(base1.theta)
-        s1 = math.sin(base1.theta)
-        c2 = math.cos(base2.theta)
-        s2 = math.sin(base2.theta)
+        body_rotation = base2.theta - base1.theta
 
-        leg1_x = base1.x + c1 * leg.frame_pose.x - s1 * leg.frame_pose.y
-        leg1_y = base1.y + s1 * leg.frame_pose.x + c1 * leg.frame_pose.y
-        leg2_x = base2.x + c2 * leg.frame_pose.x - s2 * leg.frame_pose.y
-        leg2_y = base2.y + s2 * leg.frame_pose.x + c2 * leg.frame_pose.y
+        c_base1 = math.cos(base1.theta)
+        s_base1 = math.sin(base1.theta)
+        delta_world_x = base2.x - base1.x
+        delta_world_y = base2.y - base1.y
+        delta_body_x = c_base1 * delta_world_x + s_base1 * delta_world_y
+        delta_body_y = -s_base1 * delta_world_x + c_base1 * delta_world_y
 
-        psi1 = base1.theta + leg_theta
-        psi2 = base2.theta + leg_theta
+        c_body = math.cos(body_rotation)
+        s_body = math.sin(body_rotation)
+        mount_rot_x = c_body * leg.frame_pose.x - s_body * leg.frame_pose.y
+        mount_rot_y = s_body * leg.frame_pose.x + c_body * leg.frame_pose.y
 
-        cp1 = math.cos(psi1)
-        sp1 = math.sin(psi1)
-        tip_world_x = leg1_x + cp1 * tip_local_1.x - sp1 * tip_local_1.y
-        tip_world_y = leg1_y + sp1 * tip_local_1.x + cp1 * tip_local_1.y
+        c_leg = math.cos(leg_theta)
+        s_leg = math.sin(leg_theta)
+        delta_leg_x = c_leg * (delta_body_x + mount_rot_x - leg.frame_pose.x) + s_leg * (
+            delta_body_y + mount_rot_y - leg.frame_pose.y
+        )
+        delta_leg_y = -s_leg * (delta_body_x + mount_rot_x - leg.frame_pose.x) + c_leg * (
+            delta_body_y + mount_rot_y - leg.frame_pose.y
+        )
 
-        dx_world = tip_world_x - leg2_x
-        dy_world = tip_world_y - leg2_y
-        cp2 = math.cos(psi2)
-        sp2 = math.sin(psi2)
-        tip_local_2_x = cp2 * dx_world + sp2 * dy_world
-        tip_local_2_y = -sp2 * dx_world + cp2 * dy_world
+        tip_shift_x = tip_local_1.x - delta_leg_x
+        tip_shift_y = tip_local_1.y - delta_leg_y
+        tip_local_2_x = c_body * tip_shift_x + s_body * tip_shift_y
+        tip_local_2_y = -s_body * tip_shift_x + c_body * tip_shift_y
 
         return LocalDisplacement2D(tip_local_2_x - tip_local_1.x, tip_local_2_y - tip_local_1.y)
 
