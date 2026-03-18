@@ -75,8 +75,8 @@ install(
     scripts/cpp_controller_keyboard.py
     scripts/lite_controller_keyboard.py
     scripts/lite_gait_controller.py
-    scripts/elevation_pitch_keyboard_controller.py
-    scripts/elevation_pitch_keyboard_interactive.py
+    scripts/base_pose_manipulator.py
+    scripts/elevation_pitch_keyboard.py
   DESTINATION
     lib/${PROJECT_NAME}
 )

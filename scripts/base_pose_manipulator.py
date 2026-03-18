@@ -355,6 +355,8 @@ class ElevationPitchKeyboardController(Node):
 
 
 def main() -> None:
+    # Usage: ros2 run hexapod_sim pose_manipulator --ros-args -p pose:=0,0,0,0,10,0
+    # pose values: x, y, z, roll_deg, pitch_deg, yaw_deg
     rclpy.init()
     exit_code = 0
     node = None
