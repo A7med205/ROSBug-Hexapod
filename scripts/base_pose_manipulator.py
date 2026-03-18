@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import math
+import time
 from dataclasses import dataclass
 from typing import Dict, List, Tuple
 
@@ -10,6 +11,8 @@ from rclpy.action import ActionClient
 from rclpy.duration import Duration
 from rclpy.node import Node
 from trajectory_msgs.msg import JointTrajectoryPoint
+
+sample_rate = 0.02
 
 
 @dataclass(frozen=True)
@@ -44,11 +47,24 @@ class BasePose3D:
     yaw: float
 
 
+@dataclass(frozen=True)
+class TrajectoryTerm:
+    dimension: str
+    rate: float
+    lower: float
+    upper: float
+    start: float = 0.0
+
+
+@dataclass(frozen=True)
+class TrajectorySpec:
+    description: str
+    terms: Tuple[TrajectoryTerm, ...]
+
+
 class ElevationPitchKeyboardController(Node):
     def __init__(self) -> None:
         super().__init__("elevation_pitch_pose_controller")
-
-        self.goal_time_sec = float(self.declare_parameter("goal_time_sec", 0.05).value)
 
         self.L1 = 0.0385
         self.L2 = 0.0700
@@ -69,6 +85,7 @@ class ElevationPitchKeyboardController(Node):
         )
         self.wait_timeout_sec = float(self.declare_parameter("wait_timeout_sec", 10.0).value)
         pose_text = str(self.declare_parameter("pose", "0,0,0,0,0,0").value)
+        self.trajectory_id = str(self.declare_parameter("trajectory_id", "").value).strip()
         self.target_base_pose = self._parse_pose_parameter(pose_text)
 
         self.legs: List[LegInfo] = [
@@ -85,6 +102,27 @@ class ElevationPitchKeyboardController(Node):
             for leg in self.legs
         }
         self.neutral_base_pose = BasePose3D(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        self.trajectories: Dict[str, TrajectorySpec] = {
+            "slide_y": TrajectorySpec(
+                description="y(t) = 0.01 * t, y in [0.0, 0.05]",
+                terms=(TrajectoryTerm("y", 0.01, 0.0, 0.05),),
+            ),
+            "rise_z": TrajectorySpec(
+                description="z(t) = -0.005 * t, z in [-0.03, 0.0]",
+                terms=(TrajectoryTerm("z", -0.005, -0.03, 0.0),),
+            ),
+            "yaw_sweep": TrajectorySpec(
+                description="yaw(t) = 8.0 * t deg, yaw in [0.0, 12.0] deg",
+                terms=(TrajectoryTerm("yaw", math.radians(8.0), 0.0, math.radians(12.0)),),
+            ),
+            "lean_and_shift": TrajectorySpec(
+                description="x(t) = 0.008 * t, pitch(t) = 5.0 * t deg",
+                terms=(
+                    TrajectoryTerm("x", 0.008, 0.0, 0.03),
+                    TrajectoryTerm("pitch", math.radians(5.0), 0.0, math.radians(10.0)),
+                ),
+            ),
+        }
 
         self.action_client = ActionClient(self, FollowJointTrajectory, self.action_name)
 
@@ -209,6 +247,25 @@ class ElevationPitchKeyboardController(Node):
             yaw=self._deg_to_rad(yaw_deg),
         )
 
+    def _build_pose_from_terms(self, terms: Tuple[TrajectoryTerm, ...], t_sec: float) -> BasePose3D:
+        values = {"x": 0.0, "y": 0.0, "z": 0.0, "roll": 0.0, "pitch": 0.0, "yaw": 0.0}
+        for term in terms:
+            raw_value = term.start + term.rate * t_sec
+            values[term.dimension] = self._clamp(raw_value, term.lower, term.upper)
+        return BasePose3D(**values)
+
+    @staticmethod
+    def _term_reached_boundary(term: TrajectoryTerm, t_sec: float) -> bool:
+        raw_value = term.start + term.rate * t_sec
+        if term.rate > 0.0:
+            return raw_value >= term.upper
+        if term.rate < 0.0:
+            return raw_value <= term.lower
+        return True
+
+    def _trajectory_complete(self, terms: Tuple[TrajectoryTerm, ...], t_sec: float) -> bool:
+        return all(self._term_reached_boundary(term, t_sec) for term in terms)
+
     def IK(self, tip: Point3D) -> Tuple[float, float, float]:
         y = tip.y
         x = tip.x
@@ -283,51 +340,16 @@ class ElevationPitchKeyboardController(Node):
             ordered.extend((j1, j2, j3))
         return ordered
 
-    def _send_joint_goal(self, joint_values_flat: List[float]) -> bool:
-        goal = FollowJointTrajectory.Goal()
-        goal.trajectory.joint_names = self.joint_names_flat
-
-        point = JointTrajectoryPoint()
-        point.positions = list(joint_values_flat)
-        point.time_from_start = Duration(seconds=self.goal_time_sec).to_msg()
-        goal.trajectory.points = [point]
-
-        send_future = self.action_client.send_goal_async(goal)
-        rclpy.spin_until_future_complete(self, send_future)
-        goal_handle = send_future.result()
-        if goal_handle is None or not goal_handle.accepted:
-            self.get_logger().error("Goal rejected or failed to send")
-            return False
-
-        result_future = goal_handle.get_result_async()
-        rclpy.spin_until_future_complete(self, result_future)
-        result_wrapper = result_future.result()
-        if result_wrapper is None:
-            self.get_logger().error("Goal returned no result")
-            return False
-
-        result = result_wrapper.result
-        if result.error_code != FollowJointTrajectory.Result.SUCCESSFUL:
-            self.get_logger().error(
-                f"Goal failed error_code={result.error_code}, error='{result.error_string}'"
-            )
-            return False
-        return True
-
-    def send_pose_goal(self) -> int:
-        self.get_logger().info(f"Waiting for action server: {self.action_name}")
-        if not self.action_client.wait_for_server(timeout_sec=self.wait_timeout_sec):
-            self.get_logger().error(
-                f"Action server unavailable after {self.wait_timeout_sec:.1f}s"
-            )
-            return 1
-
+    def _plan_pose(
+        self, base_pose: BasePose3D
+    ) -> Tuple[List[float], Dict[int, Point3D]] | None:
         candidate_joints: Dict[int, Tuple[float, float, float]] = {}
+        tip_positions: Dict[int, Point3D] = {}
         for leg in self.legs:
             tip_prev = self.neutral_tip_positions[leg.leg_id]
             delta = self.base_delta_to_tip_delta_3d(
                 self.neutral_base_pose,
-                self.target_base_pose,
+                base_pose,
                 leg,
                 tip_prev,
             )
@@ -341,28 +363,148 @@ class ElevationPitchKeyboardController(Node):
                 self.get_logger().error(
                     f"Joint limits exceeded for leg {leg.leg_id} at requested pose"
                 )
-                return 2
+                return None
             candidate_joints[leg.leg_id] = joints
+            tip_positions[leg.leg_id] = tip_next
+        return self._build_joint_vector(candidate_joints), tip_positions
+
+    def _format_pose_and_tips(
+        self, t_sec: float, base_pose: BasePose3D, tip_positions: Dict[int, Point3D]
+    ) -> str:
+        leg_parts: List[str] = []
+        for leg in self.legs:
+            tip = tip_positions[leg.leg_id]
+            leg_parts.append(f"L{leg.leg_id}: ({tip.x:.4f}, {tip.y:.4f}, {tip.z:.4f})")
+
+        return (
+            f"t={t_sec:.2f}s | "
+            f"base=({base_pose.x:.4f}, {base_pose.y:.4f}, {base_pose.z:.4f}, "
+            f"{math.degrees(base_pose.roll):.1f}deg, {math.degrees(base_pose.pitch):.1f}deg, "
+            f"{math.degrees(base_pose.yaw):.1f}deg)\n"
+            f"  {leg_parts[0]}, {leg_parts[1]}\n"
+            f"  {leg_parts[2]}, {leg_parts[3]}\n"
+            f"  {leg_parts[4]}, {leg_parts[5]}"
+        )
+
+    def _send_joint_trajectory(self, joint_trajectory: List[List[float]]) -> bool:
+        if not joint_trajectory:
+            self.get_logger().error("No trajectory points to send")
+            return False
+
+        goal = FollowJointTrajectory.Goal()
+        goal.trajectory.joint_names = self.joint_names_flat
+
+        goal_points: List[JointTrajectoryPoint] = []
+        for idx, joint_values_flat in enumerate(joint_trajectory):
+            point = JointTrajectoryPoint()
+            point.positions = list(joint_values_flat)
+            point.time_from_start = Duration(seconds=(idx + 1) * sample_rate).to_msg()
+            goal_points.append(point)
+        goal.trajectory.points = goal_points
+
+        action_start = time.perf_counter()
+        send_future = self.action_client.send_goal_async(goal)
+        rclpy.spin_until_future_complete(self, send_future)
+        goal_handle = send_future.result()
+        if goal_handle is None or not goal_handle.accepted:
+            self.get_logger().error("Goal rejected or failed to send")
+            return False
+
+        result_future = goal_handle.get_result_async()
+        rclpy.spin_until_future_complete(self, result_future)
+        action_end = time.perf_counter()
+        result_wrapper = result_future.result()
+        if result_wrapper is None:
+            self.get_logger().error("Goal returned no result")
+            return False
+
+        result = result_wrapper.result
+        if result.error_code != FollowJointTrajectory.Result.SUCCESSFUL:
+            self.get_logger().error(
+                f"Goal failed error_code={result.error_code}, error='{result.error_string}'"
+            )
+            return False
+        self.get_logger().info(
+            f"Goal execution time: {(action_end - action_start):.3f} s"
+        )
+        return True
+
+    def _wait_for_action_server(self) -> bool:
+        self.get_logger().info(f"Waiting for action server: {self.action_name}")
+        if self.action_client.wait_for_server(timeout_sec=self.wait_timeout_sec):
+            return True
+        self.get_logger().error(
+            f"Action server unavailable after {self.wait_timeout_sec:.1f}s"
+        )
+        return False
+
+    def _execute_pose(self, base_pose: BasePose3D) -> int:
+        plan = self._plan_pose(base_pose)
+        if plan is None:
+            return 2
+        joint_goal, tip_positions = plan
 
         self.get_logger().info(
             "Sending snap goal for pose "
-            f"x={self.target_base_pose.x:.3f}, y={self.target_base_pose.y:.3f}, z={self.target_base_pose.z:.3f}, "
-            f"roll={math.degrees(self.target_base_pose.roll):.1f} deg, "
-            f"pitch={math.degrees(self.target_base_pose.pitch):.1f} deg, "
-            f"yaw={math.degrees(self.target_base_pose.yaw):.1f} deg"
+            f"x={base_pose.x:.3f}, y={base_pose.y:.3f}, z={base_pose.z:.3f}, "
+            f"roll={math.degrees(base_pose.roll):.1f} deg, "
+            f"pitch={math.degrees(base_pose.pitch):.1f} deg, "
+            f"yaw={math.degrees(base_pose.yaw):.1f} deg"
         )
-        return 0 if self._send_joint_goal(self._build_joint_vector(candidate_joints)) else 3
+        self.get_logger().info(self._format_pose_and_tips(0.0, base_pose, tip_positions))
+        return 0 if self._send_joint_trajectory([joint_goal]) else 3
+
+    def execute_trajectory(self, trajectory_id: str) -> int:
+        if trajectory_id not in self.trajectories:
+            available = ", ".join(sorted(self.trajectories))
+            self.get_logger().error(
+                f"Unknown trajectory_id '{trajectory_id}'. Available trajectories: {available}"
+            )
+            return 2
+
+        spec = self.trajectories[trajectory_id]
+        self.get_logger().info(
+            f"Executing trajectory '{trajectory_id}' at sample_rate={sample_rate:.3f}s: {spec.description}"
+        )
+
+        joint_trajectory: List[List[float]] = []
+        t_sec = 0.0
+        while True:
+            base_pose = self._build_pose_from_terms(spec.terms, t_sec)
+            plan = self._plan_pose(base_pose)
+            if plan is None:
+                return 2
+            joint_goal, tip_positions = plan
+            self.get_logger().info(self._format_pose_and_tips(t_sec, base_pose, tip_positions))
+            if t_sec > 0.0:
+                joint_trajectory.append(joint_goal)
+            if self._trajectory_complete(spec.terms, t_sec):
+                break
+            t_sec += sample_rate
+
+        self.get_logger().info(
+            f"Sending trajectory with {len(joint_trajectory)} sampled points"
+        )
+        return 0 if self._send_joint_trajectory(joint_trajectory) else 3
+
+    def run(self) -> int:
+        if not self._wait_for_action_server():
+            return 1
+        if self.trajectory_id:
+            return self.execute_trajectory(self.trajectory_id)
+        return self._execute_pose(self.target_base_pose)
 
 
 def main() -> None:
     # Usage: ros2 run hexapod_sim pose_manipulator --ros-args -p pose:=0,0,0,0,10,0
     # pose values: x, y, z, roll_deg, pitch_deg, yaw_deg
+    # trajectory example: ros2 run hexapod_sim pose_manipulator --ros-args -p trajectory_id:=slide_y
     rclpy.init()
     exit_code = 0
     node = None
     try:
         node = ElevationPitchKeyboardController()
-        exit_code = node.send_pose_goal()
+        exit_code = node.run()
     except ValueError as exc:
         print(f"Invalid pose parameter: {exc}")
         exit_code = 2
