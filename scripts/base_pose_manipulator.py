@@ -3,7 +3,7 @@
 import math
 import time
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
+from typing import Callable, Dict, List, Tuple
 
 import rclpy
 from control_msgs.action import FollowJointTrajectory
@@ -59,7 +59,9 @@ class TrajectoryTerm:
 @dataclass(frozen=True)
 class TrajectorySpec:
     description: str
-    terms: Tuple[TrajectoryTerm, ...]
+    terms: Tuple[TrajectoryTerm, ...] = ()
+    pose_at: Callable[[float], BasePose3D] | None = None
+    is_complete: Callable[[float], bool] | None = None
 
 
 class ElevationPitchKeyboardController(Node):
@@ -102,6 +104,16 @@ class ElevationPitchKeyboardController(Node):
             for leg in self.legs
         }
         self.neutral_base_pose = BasePose3D(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        circle_radius = 0.045
+        circle_radial_speed = 0.01
+        circle_angular_velocity = 2.0
+        twist_angular_velocity = math.radians(30.0)
+        swing_radius = 0.10
+        swing_arc_limit = math.radians(15.0)
+        swing_angular_velocity = math.radians(20.0)
+        rock_max_lean = math.radians(15.0)
+        rock_lean_rate = math.radians(5.0)
+        rock_axis_yaw_rate = math.radians(90.0)
         self.trajectories: Dict[str, TrajectorySpec] = {
             "slide_y": TrajectorySpec(
                 description="y(t) = 0.01 * t, y in [0.0, 0.05]",
@@ -121,6 +133,44 @@ class ElevationPitchKeyboardController(Node):
                     TrajectoryTerm("x", 0.008, 0.0, 0.03),
                     TrajectoryTerm("pitch", math.radians(5.0), 0.0, math.radians(10.0)),
                 ),
+            ),
+            "spiral_xy": self._make_spiral_trajectory(
+                "Spiral in x/y with R=0.025 m",
+                plane="xy",
+                radius=circle_radius,
+                radial_speed=circle_radial_speed,
+                angular_velocity=circle_angular_velocity,
+            ),
+            "spiral_yz": self._make_spiral_trajectory(
+                "Spiral in y/z with R=0.025 m",
+                plane="yz",
+                radius=circle_radius,
+                radial_speed=circle_radial_speed,
+                angular_velocity=circle_angular_velocity,
+            ),
+            "spiral_xz": self._make_spiral_trajectory(
+                "Spiral in x/z with R=0.025 m",
+                plane="xz",
+                radius=circle_radius,
+                radial_speed=circle_radial_speed,
+                angular_velocity=circle_angular_velocity,
+            ),
+            "double_twist": self._make_double_twist_trajectory(
+                "Yaw 0 -> +30 deg -> -30 deg -> 0 deg",
+                max_yaw=math.radians(30.0),
+                angular_velocity=twist_angular_velocity,
+            ),
+            "swing_yz_arc": self._make_swing_arc_trajectory(
+                "Swing along a y/z arc with tangent-aligned orientation",
+                radius=swing_radius,
+                arc_limit=swing_arc_limit,
+                angular_velocity=swing_angular_velocity,
+            ),
+            "rocking_precess": self._make_rocking_trajectory(
+                "Lean to 20 deg while the lean axis rotates around z, then return upright",
+                max_lean=rock_max_lean,
+                lean_rate=rock_lean_rate,
+                axis_yaw_rate=rock_axis_yaw_rate,
             ),
         }
 
@@ -265,6 +315,167 @@ class ElevationPitchKeyboardController(Node):
 
     def _trajectory_complete(self, terms: Tuple[TrajectoryTerm, ...], t_sec: float) -> bool:
         return all(self._term_reached_boundary(term, t_sec) for term in terms)
+
+    @staticmethod
+    def _rpy_from_rotation_matrix(
+        mat: Tuple[Tuple[float, float, float], Tuple[float, float, float], Tuple[float, float, float]]
+    ) -> Tuple[float, float, float]:
+        pitch = math.asin(-max(-1.0, min(1.0, mat[2][0])))
+        cp = math.cos(pitch)
+        if abs(cp) > 1.0e-8:
+            roll = math.atan2(mat[2][1], mat[2][2])
+            yaw = math.atan2(mat[1][0], mat[0][0])
+        else:
+            roll = math.atan2(-mat[1][2], mat[1][1])
+            yaw = 0.0
+        return roll, pitch, yaw
+
+    def _pose_from_axis_angle(self, axis_yaw: float, angle: float) -> BasePose3D:
+        ux = math.cos(axis_yaw)
+        uy = math.sin(axis_yaw)
+        uz = 0.0
+        c = math.cos(angle)
+        s = math.sin(angle)
+        one_c = 1.0 - c
+        rot = (
+            (c + ux * ux * one_c, ux * uy * one_c - uz * s, ux * uz * one_c + uy * s),
+            (uy * ux * one_c + uz * s, c + uy * uy * one_c, uy * uz * one_c - ux * s),
+            (uz * ux * one_c - uy * s, uz * uy * one_c + ux * s, c + uz * uz * one_c),
+        )
+        roll, pitch, yaw = self._rpy_from_rotation_matrix(rot)
+        return BasePose3D(0.0, 0.0, 0.0, roll, pitch, yaw)
+
+    def _make_spiral_trajectory(
+        self,
+        description: str,
+        plane: str,
+        radius: float,
+        radial_speed: float,
+        angular_velocity: float,
+    ) -> TrajectorySpec:
+        out_time = radius / radial_speed
+        total_time = 2.0 * out_time
+
+        def pose_at(t_sec: float) -> BasePose3D:
+            phase = min(max(t_sec, 0.0), total_time)
+            if phase <= out_time:
+                radial = radial_speed * phase
+            else:
+                radial = radius - radial_speed * (phase - out_time)
+            theta = angular_velocity * phase
+            c = radial * math.cos(theta)
+            s = radial * math.sin(theta)
+            if plane == "xy":
+                return BasePose3D(c, s, 0.0, 0.0, 0.0, 0.0)
+            if plane == "yz":
+                return BasePose3D(0.0, c, s, 0.0, 0.0, 0.0)
+            return BasePose3D(c, 0.0, s, 0.0, 0.0, 0.0)
+
+        return TrajectorySpec(
+            description=description,
+            pose_at=pose_at,
+            is_complete=lambda t_sec: t_sec >= total_time,
+        )
+
+    @staticmethod
+    def _piecewise_ramp(
+        t_sec: float, start: float, end: float, rate: float
+    ) -> Tuple[float, bool]:
+        distance = abs(end - start)
+        duration = distance / rate if rate > 0.0 else 0.0
+        if duration == 0.0:
+            return end, True
+        phase = min(t_sec, duration)
+        direction = 1.0 if end >= start else -1.0
+        value = start + direction * rate * phase
+        return value, t_sec >= duration
+
+    def _make_double_twist_trajectory(
+        self, description: str, max_yaw: float, angular_velocity: float
+    ) -> TrajectorySpec:
+        segment_1 = abs(max_yaw) / angular_velocity
+        segment_2 = (2.0 * abs(max_yaw)) / angular_velocity
+        segment_3 = abs(max_yaw) / angular_velocity
+        total_time = segment_1 + segment_2 + segment_3
+
+        def pose_at(t_sec: float) -> BasePose3D:
+            phase = min(max(t_sec, 0.0), total_time)
+            if phase <= segment_1:
+                yaw, _ = self._piecewise_ramp(phase, 0.0, max_yaw, angular_velocity)
+            elif phase <= segment_1 + segment_2:
+                yaw, _ = self._piecewise_ramp(phase - segment_1, max_yaw, -max_yaw, angular_velocity)
+            else:
+                yaw, _ = self._piecewise_ramp(
+                    phase - segment_1 - segment_2, -max_yaw, 0.0, angular_velocity
+                )
+            return BasePose3D(0.0, 0.0, 0.0, 0.0, 0.0, yaw)
+
+        return TrajectorySpec(
+            description=description,
+            pose_at=pose_at,
+            is_complete=lambda t_sec: t_sec >= total_time,
+        )
+
+    def _make_swing_arc_trajectory(
+        self, description: str, radius: float, arc_limit: float, angular_velocity: float
+    ) -> TrajectorySpec:
+        segment_1 = arc_limit / angular_velocity
+        segment_2 = (2.0 * arc_limit) / angular_velocity
+        segment_3 = arc_limit / angular_velocity
+        total_time = segment_1 + segment_2 + segment_3
+
+        def pose_at(t_sec: float) -> BasePose3D:
+            phase = min(max(t_sec, 0.0), total_time)
+            if phase <= segment_1:
+                arc_angle, _ = self._piecewise_ramp(phase, 0.0, -arc_limit, angular_velocity)
+            elif phase <= segment_1 + segment_2:
+                arc_angle, _ = self._piecewise_ramp(
+                    phase - segment_1, -arc_limit, arc_limit, angular_velocity
+                )
+            else:
+                arc_angle, _ = self._piecewise_ramp(
+                    phase - segment_1 - segment_2, arc_limit, 0.0, angular_velocity
+                )
+            y = radius * math.sin(arc_angle)
+            z = radius * (1.0 - math.cos(arc_angle))
+            return BasePose3D(0.0, y, z, arc_angle, 0.0, 0.0)
+
+        return TrajectorySpec(
+            description=description,
+            pose_at=pose_at,
+            is_complete=lambda t_sec: t_sec >= total_time,
+        )
+
+    def _make_rocking_trajectory(
+        self, description: str, max_lean: float, lean_rate: float, axis_yaw_rate: float
+    ) -> TrajectorySpec:
+        up_time = max_lean / lean_rate
+        total_time = 2.0 * up_time
+
+        def pose_at(t_sec: float) -> BasePose3D:
+            phase = min(max(t_sec, 0.0), total_time)
+            if phase <= up_time:
+                lean = lean_rate * phase
+            else:
+                lean = max_lean - lean_rate * (phase - up_time)
+            axis_yaw = axis_yaw_rate * phase
+            return self._pose_from_axis_angle(axis_yaw, lean)
+
+        return TrajectorySpec(
+            description=description,
+            pose_at=pose_at,
+            is_complete=lambda t_sec: t_sec >= total_time,
+        )
+
+    def _trajectory_pose_at(self, spec: TrajectorySpec, t_sec: float) -> BasePose3D:
+        if spec.pose_at is not None:
+            return spec.pose_at(t_sec)
+        return self._build_pose_from_terms(spec.terms, t_sec)
+
+    def _trajectory_is_complete(self, spec: TrajectorySpec, t_sec: float) -> bool:
+        if spec.is_complete is not None:
+            return spec.is_complete(t_sec)
+        return self._trajectory_complete(spec.terms, t_sec)
 
     def IK(self, tip: Point3D) -> Tuple[float, float, float]:
         y = tip.y
@@ -470,7 +681,7 @@ class ElevationPitchKeyboardController(Node):
         joint_trajectory: List[List[float]] = []
         t_sec = 0.0
         while True:
-            base_pose = self._build_pose_from_terms(spec.terms, t_sec)
+            base_pose = self._trajectory_pose_at(spec, t_sec)
             plan = self._plan_pose(base_pose)
             if plan is None:
                 return 2
@@ -478,7 +689,7 @@ class ElevationPitchKeyboardController(Node):
             self.get_logger().info(self._format_pose_and_tips(t_sec, base_pose, tip_positions))
             if t_sec > 0.0:
                 joint_trajectory.append(joint_goal)
-            if self._trajectory_complete(spec.terms, t_sec):
+            if self._trajectory_is_complete(spec, t_sec):
                 break
             t_sec += sample_rate
 
