@@ -105,15 +105,15 @@ class ElevationPitchKeyboardController(Node):
         }
         self.neutral_base_pose = BasePose3D(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
         circle_radius = 0.045
-        circle_radial_speed = 0.01
-        circle_angular_velocity = 2.0
+        circle_radial_speed = 0.02
+        circle_angular_velocity = math.radians(200.0)
         twist_angular_velocity = math.radians(30.0)
-        swing_radius = 0.10
-        swing_arc_limit = math.radians(15.0)
-        swing_angular_velocity = math.radians(20.0)
+        swing_radius = 0.15
+        swing_arc_limit = math.radians(20.0)
+        swing_angular_velocity = math.radians(30.0)
         rock_max_lean = math.radians(15.0)
         rock_lean_rate = math.radians(5.0)
-        rock_axis_yaw_rate = math.radians(90.0)
+        rock_axis_yaw_rate = math.radians(200.0)
         self.trajectories: Dict[str, TrajectorySpec] = {
             "slide_y": TrajectorySpec(
                 description="y(t) = 0.01 * t, y in [0.0, 0.05]",
