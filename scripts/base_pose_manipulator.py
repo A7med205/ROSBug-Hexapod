@@ -390,6 +390,18 @@ class ElevationPitchKeyboardController(Node):
         value = start + direction * rate * phase
         return value, t_sec >= duration
 
+    @staticmethod
+    def _smooth_segment(
+        t_sec: float, start: float, end: float, duration: float
+    ) -> Tuple[float, bool]:
+        if duration <= 0.0:
+            return end, True
+        phase = max(0.0, min(t_sec, duration))
+        u = phase / duration
+        blend = 0.5 - 0.5 * math.cos(math.pi * u)
+        value = start + (end - start) * blend
+        return value, t_sec >= duration
+
     def _make_double_twist_trajectory(
         self, description: str, max_yaw: float, angular_velocity: float
     ) -> TrajectorySpec:
@@ -401,13 +413,11 @@ class ElevationPitchKeyboardController(Node):
         def pose_at(t_sec: float) -> BasePose3D:
             phase = min(max(t_sec, 0.0), total_time)
             if phase <= segment_1:
-                yaw, _ = self._piecewise_ramp(phase, 0.0, max_yaw, angular_velocity)
+                yaw, _ = self._smooth_segment(phase, 0.0, max_yaw, segment_1)
             elif phase <= segment_1 + segment_2:
-                yaw, _ = self._piecewise_ramp(phase - segment_1, max_yaw, -max_yaw, angular_velocity)
+                yaw, _ = self._smooth_segment(phase - segment_1, max_yaw, -max_yaw, segment_2)
             else:
-                yaw, _ = self._piecewise_ramp(
-                    phase - segment_1 - segment_2, -max_yaw, 0.0, angular_velocity
-                )
+                yaw, _ = self._smooth_segment(phase - segment_1 - segment_2, -max_yaw, 0.0, segment_3)
             return BasePose3D(0.0, 0.0, 0.0, 0.0, 0.0, yaw)
 
         return TrajectorySpec(
@@ -427,15 +437,11 @@ class ElevationPitchKeyboardController(Node):
         def pose_at(t_sec: float) -> BasePose3D:
             phase = min(max(t_sec, 0.0), total_time)
             if phase <= segment_1:
-                arc_angle, _ = self._piecewise_ramp(phase, 0.0, -arc_limit, angular_velocity)
+                arc_angle, _ = self._smooth_segment(phase, 0.0, -arc_limit, segment_1)
             elif phase <= segment_1 + segment_2:
-                arc_angle, _ = self._piecewise_ramp(
-                    phase - segment_1, -arc_limit, arc_limit, angular_velocity
-                )
+                arc_angle, _ = self._smooth_segment(phase - segment_1, -arc_limit, arc_limit, segment_2)
             else:
-                arc_angle, _ = self._piecewise_ramp(
-                    phase - segment_1 - segment_2, arc_limit, 0.0, angular_velocity
-                )
+                arc_angle, _ = self._smooth_segment(phase - segment_1 - segment_2, arc_limit, 0.0, segment_3)
             y = radius * math.sin(arc_angle)
             z = radius * (1.0 - math.cos(arc_angle))
             return BasePose3D(0.0, y, z, arc_angle, 0.0, 0.0)
