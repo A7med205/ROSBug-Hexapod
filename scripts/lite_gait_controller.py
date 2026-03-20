@@ -453,15 +453,18 @@ class LiteGaitController(Node):
         self._convert_tip_store_to_joint_store(self.tip_paths, self.joint_paths, self.PATH_TYPES)
         self._convert_tip_store_to_joint_store(self.tip_swings, self.joint_swings, self.SWING_TYPES)
 
-    # Send one single-point FollowJointTrajectory goal.
-    def _send_joint_goal(self, joint_values: List[float]) -> bool:
+    # Send either a single-point or multi-point FollowJointTrajectory goal.
+    def _send_joint_goal(self, joint_values) -> bool:
         goal = FollowJointTrajectory.Goal()
         goal.trajectory.joint_names = self.joint_names_flat
 
-        point = JointTrajectoryPoint()
-        point.positions = list(joint_values)
-        point.time_from_start = Duration(seconds=self.sample_rate).to_msg()
-        goal.trajectory.points = [point]
+        if joint_values and isinstance(joint_values[0], JointTrajectoryPoint):
+            goal.trajectory.points = list(joint_values)
+        else:
+            point = JointTrajectoryPoint()
+            point.positions = list(joint_values)
+            point.time_from_start = Duration(seconds=self.sample_rate).to_msg()
+            goal.trajectory.points = [point]
 
         send_future = self.action_client.send_goal_async(goal)
         rclpy.spin_until_future_complete(self, send_future)
@@ -546,7 +549,7 @@ class LiteGaitController(Node):
 
         return True
 
-    # Execute one phase point-by-point with 1-degree joint update gating.
+    # Execute one phase as a batched trajectory with 1-degree joint update gating.
     def _execute_joint_sequences(
         self,
         phase_name: str,
@@ -562,6 +565,8 @@ class LiteGaitController(Node):
 
         phase_points = max(len(seq) for seq in leg_sequences.values())
         min_angle_rad = math.radians(self.min_angle)
+        next_joint_goal = list(self.current_joint_goal)
+        trajectory_points: List[JointTrajectoryPoint] = []
 
         for point_idx in range(phase_points):
             desired_flat: List[float] = []
@@ -571,14 +576,20 @@ class LiteGaitController(Node):
                 desired_flat.extend(sample)
 
             for joint_idx, desired in enumerate(desired_flat):
-                current = self.current_joint_goal[joint_idx]
+                current = next_joint_goal[joint_idx]
                 if (not math.isfinite(current)) or abs(desired - current) >= min_angle_rad:
-                    self.current_joint_goal[joint_idx] = desired
+                    next_joint_goal[joint_idx] = desired
 
-            if not self._send_joint_goal(self.current_joint_goal):
-                self.get_logger().error(f"{phase_name}: failed at point {point_idx}")
-                return False
+            point = JointTrajectoryPoint()
+            point.positions = list(next_joint_goal)
+            point.time_from_start = Duration(seconds=(point_idx + 1) * self.sample_rate).to_msg()
+            trajectory_points.append(point)
 
+        if not self._send_joint_goal(trajectory_points):
+            self.get_logger().error(f"{phase_name}: failed to send trajectory")
+            return False
+
+        self.current_joint_goal = next_joint_goal
         return True
 
     def _collect_phase_sequences(
