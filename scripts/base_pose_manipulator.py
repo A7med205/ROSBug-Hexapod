@@ -12,7 +12,7 @@ from rclpy.duration import Duration
 from rclpy.node import Node
 from trajectory_msgs.msg import JointTrajectoryPoint
 
-sample_rate = 0.02
+sample_rate = 0.04
 
 
 @dataclass(frozen=True)
@@ -117,7 +117,7 @@ class ElevationPitchKeyboardController(Node):
         self.trajectories: Dict[str, TrajectorySpec] = {
             "slide_y": TrajectorySpec(
                 description="y(t) = 0.01 * t, y in [0.0, 0.05]",
-                terms=(TrajectoryTerm("y", 0.01, 0.0, 0.05),),
+                terms=(TrajectoryTerm("y", 0.025, 0.0, 0.05),),
             ),
             "rise_z": TrajectorySpec(
                 description="z(t) = -0.005 * t, z in [-0.03, 0.0]",
@@ -133,6 +133,18 @@ class ElevationPitchKeyboardController(Node):
                     TrajectoryTerm("x", 0.008, 0.0, 0.03),
                     TrajectoryTerm("pitch", math.radians(5.0), 0.0, math.radians(10.0)),
                 ),
+            ),
+            "xyz_step": self._make_piecewise_translation_trajectory(
+                "Translate +5 cm in y, then +5 cm in x, then +5 cm in z, and return in reverse at 5 cm/s",
+                waypoints=(
+                    (0.0, 0.04, 0.0),
+                    (0.04, 0.04, 0.0),
+                    (0.04, 0.04, 0.04),
+                    (0.04, 0.04, 0.0),
+                    (0.0, 0.04, 0.0),
+                    (0.0, 0.0, 0.0),
+                ),
+                speed=0.05,
             ),
             "spiral_xy": self._make_spiral_trajectory(
                 "Spiral in x/y with R=0.025 m",
@@ -473,6 +485,49 @@ class ElevationPitchKeyboardController(Node):
             is_complete=lambda t_sec: t_sec >= total_time,
         )
 
+    def _make_piecewise_translation_trajectory(
+        self,
+        description: str,
+        waypoints: Tuple[Tuple[float, float, float], ...],
+        speed: float,
+    ) -> TrajectorySpec:
+        if speed <= 0.0:
+            raise ValueError("piecewise translation speed must be positive")
+
+        segment_starts = ((0.0, 0.0, 0.0),) + waypoints[:-1]
+        segment_durations = []
+        total_time = 0.0
+        for start, end in zip(segment_starts, waypoints):
+            dx = end[0] - start[0]
+            dy = end[1] - start[1]
+            dz = end[2] - start[2]
+            distance = math.sqrt(dx * dx + dy * dy + dz * dz)
+            duration = distance / speed
+            segment_durations.append(duration)
+            total_time += duration
+
+        def pose_at(t_sec: float) -> BasePose3D:
+            phase = min(max(t_sec, 0.0), total_time)
+            elapsed = 0.0
+            for start, end, duration in zip(segment_starts, waypoints, segment_durations):
+                if phase <= elapsed + duration:
+                    if duration == 0.0:
+                        return BasePose3D(end[0], end[1], end[2], 0.0, 0.0, 0.0)
+                    blend = (phase - elapsed) / duration
+                    x = start[0] + (end[0] - start[0]) * blend
+                    y = start[1] + (end[1] - start[1]) * blend
+                    z = start[2] + (end[2] - start[2]) * blend
+                    return BasePose3D(x, y, z, 0.0, 0.0, 0.0)
+                elapsed += duration
+            last = waypoints[-1]
+            return BasePose3D(last[0], last[1], last[2], 0.0, 0.0, 0.0)
+
+        return TrajectorySpec(
+            description=description,
+            pose_at=pose_at,
+            is_complete=lambda t_sec: t_sec >= total_time,
+        )
+
     def _trajectory_pose_at(self, spec: TrajectorySpec, t_sec: float) -> BasePose3D:
         if spec.pose_at is not None:
             return spec.pose_at(t_sec)
@@ -596,8 +651,8 @@ class ElevationPitchKeyboardController(Node):
         return (
             f"t={t_sec:.2f}s | "
             f"base=({base_pose.x:.4f}, {base_pose.y:.4f}, {base_pose.z:.4f}, "
-            f"{math.degrees(base_pose.roll):.1f}deg, {math.degrees(base_pose.pitch):.1f}deg, "
-            f"{math.degrees(base_pose.yaw):.1f}deg)\n"
+            f"{math.degrees(base_pose.roll):.3f}deg, {math.degrees(base_pose.pitch):.3f}deg, "
+            f"{math.degrees(base_pose.yaw):.3f}deg)\n"
             f"  {leg_parts[0]}, {leg_parts[1]}\n"
             f"  {leg_parts[2]}, {leg_parts[3]}\n"
             f"  {leg_parts[4]}, {leg_parts[5]}"
@@ -664,9 +719,9 @@ class ElevationPitchKeyboardController(Node):
         self.get_logger().info(
             "Sending snap goal for pose "
             f"x={base_pose.x:.3f}, y={base_pose.y:.3f}, z={base_pose.z:.3f}, "
-            f"roll={math.degrees(base_pose.roll):.1f} deg, "
-            f"pitch={math.degrees(base_pose.pitch):.1f} deg, "
-            f"yaw={math.degrees(base_pose.yaw):.1f} deg"
+            f"roll={math.degrees(base_pose.roll):.3f} deg, "
+            f"pitch={math.degrees(base_pose.pitch):.3f} deg, "
+            f"yaw={math.degrees(base_pose.yaw):.3f} deg"
         )
         self.get_logger().info(self._format_pose_and_tips(0.0, base_pose, tip_positions))
         return 0 if self._send_joint_trajectory([joint_goal]) else 3
