@@ -127,6 +127,12 @@ class ElevationPitchKeyboardController(Node):
                 description="yaw(t) = 8.0 * t deg, yaw in [0.0, 12.0] deg",
                 terms=(TrajectoryTerm("yaw", math.radians(8.0), 0.0, math.radians(12.0)),),
             ),
+            "pitch_nod": self._make_single_axis_roundtrip_trajectory(
+                "Pitch 0 -> +20 deg -> 0 deg at 20 deg/s",
+                dimension="pitch",
+                peak=math.radians(20.0),
+                rate=math.radians(20.0),
+            ),
             "lean_and_shift": TrajectorySpec(
                 description="x(t) = 0.008 * t, pitch(t) = 5.0 * t deg",
                 terms=(
@@ -521,6 +527,37 @@ class ElevationPitchKeyboardController(Node):
                 elapsed += duration
             last = waypoints[-1]
             return BasePose3D(last[0], last[1], last[2], 0.0, 0.0, 0.0)
+
+        return TrajectorySpec(
+            description=description,
+            pose_at=pose_at,
+            is_complete=lambda t_sec: t_sec >= total_time,
+        )
+
+    def _make_single_axis_roundtrip_trajectory(
+        self,
+        description: str,
+        dimension: str,
+        peak: float,
+        rate: float,
+    ) -> TrajectorySpec:
+        if rate <= 0.0:
+            raise ValueError("roundtrip trajectory rate must be positive")
+        if dimension not in {"x", "y", "z", "roll", "pitch", "yaw"}:
+            raise ValueError(f"unsupported trajectory dimension '{dimension}'")
+
+        up_time = abs(peak) / rate
+        total_time = 2.0 * up_time
+
+        def pose_at(t_sec: float) -> BasePose3D:
+            phase = min(max(t_sec, 0.0), total_time)
+            if phase <= up_time:
+                value, _ = self._piecewise_ramp(phase, 0.0, peak, rate)
+            else:
+                value, _ = self._piecewise_ramp(phase - up_time, peak, 0.0, rate)
+            values = {"x": 0.0, "y": 0.0, "z": 0.0, "roll": 0.0, "pitch": 0.0, "yaw": 0.0}
+            values[dimension] = value
+            return BasePose3D(**values)
 
         return TrajectorySpec(
             description=description,
