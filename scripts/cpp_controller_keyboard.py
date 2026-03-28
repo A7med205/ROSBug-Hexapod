@@ -11,14 +11,12 @@ from std_msgs.msg import Int32
 
 
 KEY_TO_TRAJECTORY = {
-    '0': 0,
-    '1': 1,
-    '2': 2,
-    '3': 3,
-    '4': 4,
-    '5': 5,
-    's': 5,
-    'S': 5,
+    'w': 0,
+    'e': 1,
+    'p': 2,
+    'q': 3,
+    's': 4,
+    '0': 5,
 }
 
 
@@ -57,7 +55,7 @@ def main() -> None:
             key = read_key(0.03)
             if not key:
                 continue
-            if key == 'q':
+            if key == 'x':
                 running = False
                 continue
             if key in KEY_TO_TRAJECTORY:
