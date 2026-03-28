@@ -9,12 +9,21 @@ namespace hexapod_sim
 
 enum class TrajectoryType : int
 {
-  StraightY = 0,
-  DiagonalXY = 1,
-  InPlaceRotation = 2,
-  ExternalCenterOrbit = 3,
-  RotateAndTranslateY = 4,
-  Stationary = 5
+  Stationary = 0,
+  StraightPositiveY = 1,
+  StraightPositiveX = 2,
+  DiagonalPositiveXPositiveY = 3,
+  DiagonalNegativeXPositiveY = 4,
+  ExternalCenterOrbitPositiveX = 5,
+  ExternalCenterOrbitNegativeX = 6,
+  InPlaceRotationClockwise = 7,
+  StraightNegativeY = 8,
+  StraightNegativeX = 9,
+  DiagonalNegativeXNegativeY = 10,
+  DiagonalPositiveXNegativeY = 11,
+  ExternalCenterOrbitPositiveXReverse = 12,
+  ExternalCenterOrbitNegativeXReverse = 13,
+  InPlaceRotationCounterClockwise = 14
 };
 
 enum class Tripod
@@ -43,16 +52,26 @@ inline constexpr char tripod_label(Tripod tripod) { return tripod == Tripod::A ?
 inline constexpr const std::array<std::size_t, 3> & tripod_legs(Tripod tripod) { return tripod == Tripod::A ? kTripodA : kTripodB; }
 inline constexpr int required_peak_tip_limit_hits(PullPhaseSpan phase_span) { return phase_span == PullPhaseSpan::FullStep ? 2 : 1; }
 inline constexpr int trajectory_type_id(TrajectoryType type) { return static_cast<int>(type); }
+inline constexpr bool is_valid_trajectory_type_id(int id) { return id >= 0 && id <= 14; }
 
 inline constexpr TrajectoryType trajectory_type_from_id(int id)
 {
   switch (id) {
-    case 0: return TrajectoryType::StraightY;
-    case 1: return TrajectoryType::DiagonalXY;
-    case 2: return TrajectoryType::InPlaceRotation;
-    case 3: return TrajectoryType::ExternalCenterOrbit;
-    case 4: return TrajectoryType::RotateAndTranslateY;
-    case 5: return TrajectoryType::Stationary;
+    case 0: return TrajectoryType::Stationary;
+    case 1: return TrajectoryType::StraightPositiveY;
+    case 2: return TrajectoryType::StraightPositiveX;
+    case 3: return TrajectoryType::DiagonalPositiveXPositiveY;
+    case 4: return TrajectoryType::DiagonalNegativeXPositiveY;
+    case 5: return TrajectoryType::ExternalCenterOrbitPositiveX;
+    case 6: return TrajectoryType::ExternalCenterOrbitNegativeX;
+    case 7: return TrajectoryType::InPlaceRotationClockwise;
+    case 8: return TrajectoryType::StraightNegativeY;
+    case 9: return TrajectoryType::StraightNegativeX;
+    case 10: return TrajectoryType::DiagonalNegativeXNegativeY;
+    case 11: return TrajectoryType::DiagonalPositiveXNegativeY;
+    case 12: return TrajectoryType::ExternalCenterOrbitPositiveXReverse;
+    case 13: return TrajectoryType::ExternalCenterOrbitNegativeXReverse;
+    case 14: return TrajectoryType::InPlaceRotationCounterClockwise;
     default: return TrajectoryType::Stationary;
   }
 }

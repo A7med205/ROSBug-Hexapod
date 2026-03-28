@@ -15,7 +15,15 @@ GaitControllerNode::GaitControllerNode()
   const int64_t configured_trajectory = this->declare_parameter<int64_t>(
     "trajectory_id",
     static_cast<int64_t>(trajectory_type_id(config_.trajectory_type)));
-  config_.trajectory_type = trajectory_type_from_id(static_cast<int>(configured_trajectory));
+  if (!is_valid_trajectory_type_id(static_cast<int>(configured_trajectory))) {
+    RCLCPP_WARN(
+      this->get_logger(),
+      "[node] invalid configured trajectory_id=%ld, falling back to stationary (0)",
+      configured_trajectory);
+    config_.trajectory_type = TrajectoryType::Stationary;
+  } else {
+    config_.trajectory_type = trajectory_type_from_id(static_cast<int>(configured_trajectory));
+  }
 
   state_.legs = create_default_legs();
   initialize_path_tip_state(state_);
@@ -43,6 +51,10 @@ GaitControllerNode::GaitControllerNode()
 
 void GaitControllerNode::on_trajectory_type_msg(const std_msgs::msg::Int32::SharedPtr msg)
 {
+  if (!is_valid_trajectory_type_id(msg->data)) {
+    RCLCPP_WARN(this->get_logger(), "[node] ignoring invalid trajectory request id=%d", msg->data);
+    return;
+  }
   const auto requested = trajectory_type_from_id(msg->data);
   if (requested == state_.requested_trajectory_type) return;
   state_.requested_trajectory_type = requested;
