@@ -96,6 +96,10 @@ BasePose2D MasterPath::pose(double t, TrajectoryType trajectory_type) const
     case TrajectoryType::InPlaceRotationCounterClockwise:
       pose.theta = self_angular_speed * local_t;
       break;
+    case TrajectoryType::RotateAndTranslatePositiveY:
+      pose.y = linear_speed_y * local_t;
+      pose.theta = self_angular_speed * local_t;
+      break;
     default:
       break;
   }
@@ -121,6 +125,7 @@ std::string MasterPath::name(TrajectoryType trajectory_type) const
     case TrajectoryType::ExternalCenterOrbitPositiveXReverse: return "orbit reverse center +X";
     case TrajectoryType::ExternalCenterOrbitNegativeXReverse: return "orbit reverse center -X";
     case TrajectoryType::InPlaceRotationCounterClockwise: return "self rotation CCW";
+    case TrajectoryType::RotateAndTranslatePositiveY: return "rotate +Y";
     default: return "unknown";
   }
 }

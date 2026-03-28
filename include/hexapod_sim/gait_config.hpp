@@ -23,7 +23,8 @@ enum class TrajectoryType : int
   DiagonalPositiveXNegativeY = 11,
   ExternalCenterOrbitPositiveXReverse = 12,
   ExternalCenterOrbitNegativeXReverse = 13,
-  InPlaceRotationCounterClockwise = 14
+  InPlaceRotationCounterClockwise = 14,
+  RotateAndTranslatePositiveY = 15
 };
 
 enum class Tripod
@@ -52,7 +53,7 @@ inline constexpr char tripod_label(Tripod tripod) { return tripod == Tripod::A ?
 inline constexpr const std::array<std::size_t, 3> & tripod_legs(Tripod tripod) { return tripod == Tripod::A ? kTripodA : kTripodB; }
 inline constexpr int required_peak_tip_limit_hits(PullPhaseSpan phase_span) { return phase_span == PullPhaseSpan::FullStep ? 2 : 1; }
 inline constexpr int trajectory_type_id(TrajectoryType type) { return static_cast<int>(type); }
-inline constexpr bool is_valid_trajectory_type_id(int id) { return id >= 0 && id <= 14; }
+inline constexpr bool is_valid_trajectory_type_id(int id) { return id >= 0 && id <= 15; }
 
 inline constexpr TrajectoryType trajectory_type_from_id(int id)
 {
@@ -72,6 +73,7 @@ inline constexpr TrajectoryType trajectory_type_from_id(int id)
     case 12: return TrajectoryType::ExternalCenterOrbitPositiveXReverse;
     case 13: return TrajectoryType::ExternalCenterOrbitNegativeXReverse;
     case 14: return TrajectoryType::InPlaceRotationCounterClockwise;
+    case 15: return TrajectoryType::RotateAndTranslatePositiveY;
     default: return TrajectoryType::Stationary;
   }
 }
