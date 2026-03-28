@@ -41,6 +41,7 @@ public:
     TrajectoryType trajectory_type);
 
 private:
+  void log_sampled_paths(double phase_start_time);
   // Converts base motion into local tip displacement for a stance-locked foot.
   LocalDisplacement2D tip_delta(const BasePose2D & base1, const BasePose2D & base2, int leg_id);
   // Returns world-frame neutral tip pose (x,y,theta) for a leg at time t.

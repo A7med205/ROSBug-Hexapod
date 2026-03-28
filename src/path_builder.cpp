@@ -1,6 +1,8 @@
 #include "hexapod_sim/path_builder.hpp"
 
 #include <cmath>
+#include <iomanip>
+#include <sstream>
 
 #include "hexapod_sim/kinematics.hpp"
 
@@ -130,6 +132,8 @@ bool PathBuilder::build_pulls(
   const int peak_tip_limit_hits_target = required_peak_tip_limit_hits(pull_phase_span);
   const auto & tripod_legs_idx = tripod_legs(pull_tripod);
 
+  state_.base_path.clear();
+  state_.base_path.reserve(2048);
   for (auto & path : state_.path_3d) { path.clear(); path.reserve(2048); }
   for (std::size_t i = 0; i < state_.legs.size(); ++i) {
     state_.path_tip_state[i] = state_.legs[i].current_tip_position;
@@ -143,6 +147,7 @@ bool PathBuilder::build_pulls(
 
   TrajectoryType active_trajectory_type = trajectory_type;
   BasePose2D base_prev = master_path_.pose(start_time, active_trajectory_type);
+  state_.base_path.push_back(base_prev);
   constexpr std::size_t max_path_steps = 10000;
   int peak_tip_limit_hits = 0;
   double t = start_time;
@@ -152,6 +157,7 @@ bool PathBuilder::build_pulls(
     rclcpp::spin_some(node_.get_node_base_interface());
     t += config_.discrete_step;
     const BasePose2D base_curr = master_path_.pose(t, active_trajectory_type);
+    state_.base_path.push_back(base_curr);
     bool any_tip_hit_limit = false;
 
     for (std::size_t i = 0; i < tripod_legs_idx.size(); ++i) {
@@ -246,7 +252,68 @@ bool PathBuilder::build_swings(
     state_.legs[leg_idx].current_tip_position = {end_x, end_y, end_z};
   }
 
+  log_sampled_paths(start_time - pull_duration);
   return true;
+}
+
+void PathBuilder::log_sampled_paths(double phase_start_time)
+{
+  if (state_.path_3d.empty() || state_.path_3d[0].empty()) {
+    RCLCPP_WARN(node_.get_logger(), "[path_builder] skipping sampled path log: empty path set");
+    return;
+  }
+
+  const std::size_t sample_count = state_.path_3d[0].size();
+  if (state_.base_path.size() != sample_count) {
+    RCLCPP_ERROR(
+      node_.get_logger(),
+      "[path_builder] skipping sampled path log: base_path has %zu samples but leg paths have %zu",
+      state_.base_path.size(),
+      sample_count);
+    return;
+  }
+
+  for (std::size_t leg_idx = 1; leg_idx < state_.path_3d.size(); ++leg_idx) {
+    if (state_.path_3d[leg_idx].size() != sample_count) {
+      RCLCPP_ERROR(
+        node_.get_logger(),
+        "[path_builder] skipping sampled path log: leg %zu has %zu samples but expected %zu",
+        leg_idx + 1,
+        state_.path_3d[leg_idx].size(),
+        sample_count);
+      return;
+    }
+  }
+
+  for (std::size_t sample_idx = 0; sample_idx < sample_count; ++sample_idx) {
+    const double sample_time = phase_start_time + static_cast<double>(sample_idx) * config_.discrete_step;
+    if (state_.has_logged_sample_time && std::abs(sample_time - state_.last_logged_sample_time) < 1e-9) {
+      continue;
+    }
+
+    const auto & base = state_.base_path[sample_idx];
+    std::ostringstream log;
+    const double yaw_deg = base.theta * (180.0 / kPi);
+    log << std::fixed
+        << "t=" << std::setprecision(2) << sample_time << "s | base=("
+        << std::setprecision(4) << base.x << ", " << base.y << ", 0.0000, 0.000deg, 0.000deg, "
+        << std::setprecision(3) << yaw_deg << "deg)\n";
+
+    for (std::size_t row = 0; row < state_.path_3d.size(); row += 2) {
+      const auto & tip_a = state_.path_3d[row][sample_idx];
+      const auto & tip_b = state_.path_3d[row + 1][sample_idx];
+      log << std::setprecision(4)
+          << "L" << row + 1 << ": (" << tip_a.x << ", " << tip_a.y << ", " << tip_a.z << "), "
+          << "L" << row + 2 << ": (" << tip_b.x << ", " << tip_b.y << ", " << tip_b.z << ")";
+      if (row + 2 < state_.path_3d.size()) {
+        log << '\n';
+      }
+    }
+
+    RCLCPP_INFO(node_.get_logger(), "%s", log.str().c_str());
+    state_.last_logged_sample_time = sample_time;
+    state_.has_logged_sample_time = true;
+  }
 }
 
 }  // namespace hexapod_sim

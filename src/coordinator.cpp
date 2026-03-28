@@ -44,6 +44,7 @@ bool GaitCoordinator::run()
   state_.master_path_time = 0.0;
 
   auto run_phase = [&](Tripod pull_tripod, PullPhaseSpan pull_phase_span, const char * phase_label, bool end_swing_to_neutral) -> bool {
+    const double phase_start_time = state_.master_path_time;
     double pull_end_time = state_.master_path_time;
     std::size_t pull_point_count = 0;
 
@@ -62,7 +63,7 @@ bool GaitCoordinator::run()
     if (!path_builder_.build_swings(
           opposite_tripod(pull_tripod),
           pull_end_time,
-          pull_end_time - state_.master_path_time,
+          pull_end_time - phase_start_time,
           pull_point_count,
           end_swing_to_neutral,
           state_.current_trajectory_type))

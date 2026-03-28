@@ -31,12 +31,15 @@ struct Leg
 struct GaitState
 {
   double master_path_time{0.0};
+  std::vector<BasePose2D> base_path;
   std::array<std::vector<Point3D>, 6> path_3d;
   std::array<Point3D, 6> path_tip_state;
   std::vector<Leg> legs;
   trajectory_msgs::msg::JointTrajectory joints_trajectory;
   TrajectoryType current_trajectory_type{TrajectoryType::Stationary};
   TrajectoryType requested_trajectory_type{TrajectoryType::Stationary};
+  double last_logged_sample_time{0.0};
+  bool has_logged_sample_time{false};
   bool stop_requested{false};
 };
 
