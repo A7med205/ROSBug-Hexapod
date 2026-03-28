@@ -48,7 +48,7 @@ bool TrajectoryExecutor::execute_current_paths()
   state_.joints_trajectory.joint_names.clear();
   state_.joints_trajectory.points.clear();
   state_.joints_trajectory.joint_names.reserve(state_.legs.size() * 3);
-  state_.joints_trajectory.points.reserve(points_per_leg * state_.legs.size());
+  state_.joints_trajectory.points.reserve(points_per_leg);
   for (const auto & leg : state_.legs) {
     state_.joints_trajectory.joint_names.insert(
       state_.joints_trajectory.joint_names.end(),
@@ -63,33 +63,29 @@ bool TrajectoryExecutor::execute_current_paths()
       Kinematics::compute_ik(target_tip, j1, j2, j3, node_.get_logger(), *node_.get_clock());
       const std::array<double, 3> target_angles = {j1, j2, j3};
 
-      bool any_joint_changed = false;
       for (std::size_t joint_idx = 0; joint_idx < 3; ++joint_idx) {
         const double current = candidate_joint_angles[leg_idx][joint_idx];
         const double delta = std::abs(target_angles[joint_idx] - current);
         if (!std::isfinite(current) || delta > min_angle_rad) {
           candidate_joint_angles[leg_idx][joint_idx] = target_angles[joint_idx];
-          any_joint_changed = true;
         }
-      }
-
-      if (any_joint_changed) {
-        trajectory_msgs::msg::JointTrajectoryPoint point;
-        point.positions.reserve(state_.legs.size() * 3);
-        for (const auto & leg_joints : candidate_joint_angles) {
-          point.positions.push_back(leg_joints[0]);
-          point.positions.push_back(leg_joints[1]);
-          point.positions.push_back(leg_joints[2]);
-        }
-
-        const double time_from_start_sec = static_cast<double>(state_.joints_trajectory.points.size() + 1) * config_.discrete_step;
-        const int32_t sec = static_cast<int32_t>(time_from_start_sec);
-        const double frac_sec = time_from_start_sec - static_cast<double>(sec);
-        point.time_from_start.sec = sec;
-        point.time_from_start.nanosec = static_cast<uint32_t>(frac_sec * 1e9);
-        state_.joints_trajectory.points.push_back(point);
       }
     }
+
+    trajectory_msgs::msg::JointTrajectoryPoint point;
+    point.positions.reserve(state_.legs.size() * 3);
+    for (const auto & leg_joints : candidate_joint_angles) {
+      point.positions.push_back(leg_joints[0]);
+      point.positions.push_back(leg_joints[1]);
+      point.positions.push_back(leg_joints[2]);
+    }
+
+    const double time_from_start_sec = static_cast<double>(point_idx + 1) * config_.discrete_step;
+    const int32_t sec = static_cast<int32_t>(time_from_start_sec);
+    const double frac_sec = time_from_start_sec - static_cast<double>(sec);
+    point.time_from_start.sec = sec;
+    point.time_from_start.nanosec = static_cast<uint32_t>(frac_sec * 1e9);
+    state_.joints_trajectory.points.push_back(point);
   }
 
   if (!state_.joints_trajectory.points.empty()) {
