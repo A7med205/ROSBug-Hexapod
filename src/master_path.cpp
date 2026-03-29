@@ -16,9 +16,9 @@ MasterPath::MasterPath(const GaitConfig & config)
 BasePose2D MasterPath::pose(double t, TrajectoryType trajectory_type) const
 {
   (void)config_;
-  constexpr double linear_speed_x = 0.12;
-  constexpr double linear_speed_y = 0.12;
-  constexpr double diagonal_speed = 0.12;
+  constexpr double linear_speed_x = 0.2;
+  constexpr double linear_speed_y = 0.2;
+  constexpr double diagonal_speed = 0.2;
   constexpr double self_angular_speed = 0.75;
   constexpr double external_orbit_r = 0.30;
   constexpr double external_orbit_w = 0.75;
@@ -98,7 +98,7 @@ BasePose2D MasterPath::pose(double t, TrajectoryType trajectory_type) const
       break;
     case TrajectoryType::RotateAndTranslatePositiveY:
       pose.y = linear_speed_y * local_t;
-      pose.theta = self_angular_speed * local_t;
+      pose.theta = self_angular_speed * 0.75 local_t;
       break;
     default:
       break;

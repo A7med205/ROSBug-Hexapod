@@ -80,7 +80,7 @@ inline constexpr TrajectoryType trajectory_type_from_id(int id)
 
 struct GaitConfig
 {
-  double discrete_step{0.02};
+  double discrete_step{0.04};
   double min_angle_deg{1.0};
   double limit_radius{0.05};
   double swing_height{0.02};
