@@ -22,6 +22,9 @@ BasePose2D MasterPath::pose(double t, TrajectoryType trajectory_type) const
   constexpr double self_angular_speed = 0.75;
   constexpr double external_orbit_r = 0.30;
   constexpr double external_orbit_w = 0.75;
+  constexpr double staged_turn_t1 = kPi / 3.0;
+  constexpr double staged_turn_t2 = 5.0 * kPi / 6.0;
+  constexpr double staged_turn_tx = staged_turn_t2 - staged_turn_t1;
 
   if (trajectory_type != active_trajectory_type_) {
     active_trajectory_type_ = trajectory_type;
@@ -98,8 +101,28 @@ BasePose2D MasterPath::pose(double t, TrajectoryType trajectory_type) const
       break;
     case TrajectoryType::RotateAndTranslatePositiveY:
       pose.y = linear_speed_y * local_t;
-      pose.theta = self_angular_speed * 0.75 local_t;
+      pose.theta = self_angular_speed * 0.75 * local_t;
       break;
+    case TrajectoryType::CustomStagedTurn: {
+      if (local_t <= staged_turn_t1) {
+        pose.y = local_t / 5.0;
+        pose.theta = 3.0 * local_t / 4.0;
+        break;
+      }
+
+      const double tau = local_t - staged_turn_t1;
+      if (local_t <= staged_turn_t2) {
+        pose.x = -(0.1 / staged_turn_tx) * tau * tau;
+        pose.y = (kPi / 15.0) + (tau / 5.0) - (4.0 * tau * tau * tau) / (15.0 * kPi * kPi);
+        pose.theta = (kPi / 4.0) + (3.0 * tau / 4.0) - (tau * tau * tau) / (kPi * kPi);
+        break;
+      }
+
+      pose.x = -0.1 * staged_turn_tx - 0.2 * (local_t - staged_turn_t1 - staged_turn_tx);
+      pose.y = 2.0 * kPi / 15.0;
+      pose.theta = kPi / 2.0;
+      break;
+    }
     default:
       break;
   }
@@ -126,6 +149,7 @@ std::string MasterPath::name(TrajectoryType trajectory_type) const
     case TrajectoryType::ExternalCenterOrbitNegativeXReverse: return "orbit reverse center -X";
     case TrajectoryType::InPlaceRotationCounterClockwise: return "self rotation CCW";
     case TrajectoryType::RotateAndTranslatePositiveY: return "rotate +Y";
+    case TrajectoryType::CustomStagedTurn: return "custom staged turn";
     default: return "unknown";
   }
 }
