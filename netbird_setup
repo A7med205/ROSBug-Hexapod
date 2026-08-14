@@ -1,5 +1,7 @@
+RPi:
+-------------------------------
 curl -fsSL https://pkgs.netbird.io/install.sh | sudo bash
-netbird up --setup-key A7CF3A19-7B77-4EEB-B4AF-DDE91D2696D0
+netbird up --setup-key <KEY>
 
 PC:
 -------------------------------
