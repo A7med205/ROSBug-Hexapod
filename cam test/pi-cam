@@ -30,4 +30,4 @@ Stream:
 libcamera-vid -t 0 --inline --width 640 --height 480 --framerate 5 --codec yuv420 --output - --nopreview | ffmpeg -f rawvideo -pixel_format yuv420p -video_size 640x480 -framerate 5 -i - -f mjpeg -q:v 5 -listen 1 http://0.0.0.0:8080/
 
 -----------------------------------
-./pi-webrtc   --camera=libcamera:0   --fps=25   --width=640   --height=480   --use-mqtt   --mqtt-host=le60aef1.ala.dedicated.aws.emqxcloud.com   --mqtt-port=8883   --mqtt-username=pi-user   --mqtt-password=abcd1234   --uid=home-pi-abcd   --no-audio   --hw-accel
+./pi-webrtc   --camera=libcamera:0   --fps=25   --width=640   --height=480   --use-mqtt   --mqtt-host=k11b0099.ala.us-east-1.emqxsl.com  --mqtt-port=8883   --mqtt-username=pi-user   --mqtt-password=abcd1234   --uid=home-pi-abcd   --no-audio   --hw-accel
