@@ -4,4 +4,4 @@ https://github.com/TzuHuanTai/RaspberryPi-WebRTC
 
 Run:
 -----------------
-./pi-webrtc   --camera=libcamera:0   --fps=25   --width=640   --height=480   --use-mqtt   --mqtt-host=k11b0099.ala.us-east-1.emqxsl.com  --mqtt-port=8883   --mqtt-username=pi-user   --mqtt-password=abcd1234   --uid=home-pi-abcd   --no-audio   --hw-accel
+./pi-webrtc   --camera=libcamera:0   --fps=25   --width=640   --height=480   --use-mqtt   --mqtt-host=<host>  --mqtt-port=8883   --mqtt-username=<username>   --mqtt-password=<password>   --uid=<uid>   --no-audio   --hw-accel
