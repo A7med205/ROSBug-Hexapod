@@ -16,15 +16,17 @@ MasterPath::MasterPath(const GaitConfig & config)
 BasePose2D MasterPath::pose(double t, TrajectoryType trajectory_type) const
 {
   (void)config_;
-  constexpr double linear_speed_x = 0.2;
-  constexpr double linear_speed_y = 0.2;
-  constexpr double diagonal_speed = 0.2;
+  constexpr double linear_speed_x = 0.4;
+  constexpr double linear_speed_y = 0.4;
+  constexpr double diagonal_speed = 0.4;
   constexpr double self_angular_speed = 0.75;
   constexpr double external_orbit_r = 0.30;
   constexpr double external_orbit_w = 0.75;
   constexpr double staged_turn_t1 = kPi / 3.0;
   constexpr double staged_turn_t2 = 5.0 * kPi / 6.0;
   constexpr double staged_turn_tx = staged_turn_t2 - staged_turn_t1;
+  constexpr double offset_orbit_w = 0.24;
+  constexpr double offset_orbit_yaw_w = 0.48;
 
   if (trajectory_type != active_trajectory_type_) {
     active_trajectory_type_ = trajectory_type;
@@ -123,6 +125,11 @@ BasePose2D MasterPath::pose(double t, TrajectoryType trajectory_type) const
       pose.theta = kPi / 2.0;
       break;
     }
+    case TrajectoryType::OffsetOrbitTurn:
+      pose.x = -1.6 + 1.6 * std::cos(offset_orbit_w * local_t);
+      pose.y = 1.6 * std::sin(offset_orbit_w * local_t);
+      pose.theta = offset_orbit_yaw_w * local_t;
+      break;
     default:
       break;
   }
@@ -150,6 +157,7 @@ std::string MasterPath::name(TrajectoryType trajectory_type) const
     case TrajectoryType::InPlaceRotationCounterClockwise: return "self rotation CCW";
     case TrajectoryType::RotateAndTranslatePositiveY: return "rotate +Y";
     case TrajectoryType::CustomStagedTurn: return "custom staged turn";
+    case TrajectoryType::OffsetOrbitTurn: return "offset orbit turn";
     default: return "unknown";
   }
 }

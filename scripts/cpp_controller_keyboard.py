@@ -33,6 +33,7 @@ ROTATION_KEYS = {
     "p": 7,   # self CW
     "l": 15,  # rotate +Y
     "t": 16,  # custom staged turn
+    "y": 17,  # offset orbit turn
 }
 
 
@@ -76,7 +77,7 @@ def print_help() -> None:
     print("Stop: 0")
     print("Lines: w(+Y), d(+X), s(-Y), a(-X)")
     print("Self rotation: o(CCW), p(CW)")
-    print("Rotate while moving: l(+Y + CCW), t(custom staged turn)")
+    print("Rotate while moving: l(+Y + CCW), t(custom staged turn), y(offset orbit turn)")
     print("q/e/z/c mode toggle: press m (diagonal <-> orbit)")
     print("Diagonal mode q/e/z/c: (+Y,-X), (+Y,+X), (-Y,-X), (-Y,+X)")
     print("Orbit mode q/e/z/c: (-X center), reverse(+X), reverse(-X), (+X center)")

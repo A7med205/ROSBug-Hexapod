@@ -9,7 +9,7 @@ from launch.actions import (
 )
 from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.conditions import IfCondition
+from launch.conditions import IfCondition, UnlessCondition
 from launch.substitutions import (
     Command,
     FindExecutable,
@@ -27,6 +27,7 @@ def generate_launch_description():
     pkg_hexapod_share = get_package_share_directory('hexapod_sim')
     pkg_file_path = f"file://{pkg_hexapod_share}/"
     use_sim_time = LaunchConfiguration('use_sim_time', default=True)
+    use_sim = LaunchConfiguration('sim')
     use_rviz = LaunchConfiguration('rviz')
     rviz_config_file = os.path.join(pkg_hexapod_share, 'rviz', 'config.rviz')
     robot_controllers = PathJoinSubstitution(
@@ -85,6 +86,14 @@ def generate_launch_description():
         parameters=[robot_description_param, {'use_sim_time': use_sim_time}]
     )
 
+    # Joint states for RViz-only visualization when Gazebo is disabled.
+    joint_state_publisher = Node(
+        package='joint_state_publisher',
+        executable='joint_state_publisher',
+        output='screen',
+        condition=UnlessCondition(use_sim),
+    )
+
     # RViz2
     rviz_node = Node(
         package='rviz2',
@@ -107,6 +116,7 @@ def generate_launch_description():
                    '-y', spawn_y,
                    '-z', spawn_z,
                   ],
+        condition=IfCondition(use_sim),
     )
 
     # Joint state broadcaster
@@ -133,7 +143,8 @@ def generate_launch_description():
         package='ros_gz_bridge',
         executable='parameter_bridge',
         arguments=['/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock'],
-        output='screen'
+        output='screen',
+        condition=IfCondition(use_sim),
     )
 
     # Gazebo Sim
@@ -142,7 +153,9 @@ def generate_launch_description():
             [PathJoinSubstitution([FindPackageShare('ros_gz_sim'),
                                    'launch',
                                    'gz_sim.launch.py'])]),
-        launch_arguments=[('gz_args', [' -r -v 1 empty.sdf'])])
+        launch_arguments=[('gz_args', [' -r -v 1 empty.sdf'])],
+        condition=IfCondition(use_sim),
+    )
 
     return LaunchDescription([
         DeclareLaunchArgument(
@@ -153,23 +166,30 @@ def generate_launch_description():
             'rviz',
             default_value='false',
             description='Launch RViz2 if true'),
+        DeclareLaunchArgument(
+            'sim',
+            default_value='true',
+            description='Launch Gazebo Sim and simulated controllers if true'),
 
         gz_sim,
         prepare_robot_description,
         node_robot_state_publisher,
+        joint_state_publisher,
         gz_spawn_entity,        
 
         RegisterEventHandler(
             event_handler=OnProcessExit(
                 target_action=gz_spawn_entity,
                 on_exit=[joint_state_broadcaster_spawner],
-            )
+            ),
+            condition=IfCondition(use_sim),
         ),
         RegisterEventHandler(
             event_handler=OnProcessExit(
                 target_action=joint_state_broadcaster_spawner,
                 on_exit=[joint_trajectory_controller_spawner],
-            )
+            ),
+            condition=IfCondition(use_sim),
         ),
 
         bridge,
