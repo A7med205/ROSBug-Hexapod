@@ -1,0 +1,7 @@
+Package:
+-----------------
+https://github.com/TzuHuanTai/RaspberryPi-WebRTC
+
+Run:
+-----------------
+./pi-webrtc   --camera=libcamera:0   --fps=25   --width=640   --height=480   --use-mqtt   --mqtt-host=<host>  --mqtt-port=8883   --mqtt-username=<username>   --mqtt-password=<password>   --uid=<uid>   --no-audio   --hw-accel

@@ -1,0 +1,4 @@
+pip install mpremote
+
+mpremote cp main.py :main.py
+mpremote rm :main.py

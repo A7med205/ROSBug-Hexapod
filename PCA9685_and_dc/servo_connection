@@ -1,0 +1,19 @@
+| PCA9685 Pin | RPi Pin             |
+| ----------- | ------------------- |
+| VCC         | 3.3V (Pin 1)        |
+| SDA         | SDA (Pin 3, GPIO 2) |
+| SCL         | SCL (Pin 5, GPIO 3) |
+| GND         | GND (Pin 6)         |
+
+| PCA9685 Pin | 5-6V Power |
+| ----------- | ---------- |
+| V+          | +          |
+| GND         | -          |
+
+| PCA9685 Pin | Servo Wire |
+| ----------- | ---------- |
+| PWM         | PWM        |
+| V+          | +          |
+| GND         | GND        |
+
+Common GND ^

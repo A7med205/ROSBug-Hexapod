@@ -1,0 +1,17 @@
+nmcli device status
+nmcli dev wifi list        
+nmcli dev wifi connect "SSID" password "PASSWORD"
+nmcli dev wifi connect "EE-FZF28J" password "KdEb4UTLHe6fxA"
+
+sudo nano /etc/wpa_supplicant/wpa_supplicant.conf
+
+ctrl_interface=DIR=/var/run/wpa_supplicant GROUP=netdev
+update_config=1
+country=GB
+
+network={
+    ssid="EE-FZF28J"
+    psk="KdEb4UTLHe6fxA"
+    key_mgmt=WPA-PSK
+}
+
