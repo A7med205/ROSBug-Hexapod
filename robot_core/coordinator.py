@@ -138,6 +138,10 @@ class HexapodCoordinator:
 
         if command.kind == CommandKind.STOP:
             if self.mode == ControllerMode.POSTURE:
+                if self.posture.is_busy:
+                    return self.posture.request_interrupt()
+                if self.posture.is_neutral:
+                    return True
                 return self.posture.request_return_to_neutral()
             return self.gait.request(command)
 
@@ -153,6 +157,14 @@ class HexapodCoordinator:
                 command.posture_axis,
                 command.posture_delta,
             )
+
+        if command.kind == CommandKind.RESET_TILT:
+            if (
+                self.mode != ControllerMode.POSTURE
+                or self.requested_mode != ControllerMode.POSTURE
+            ):
+                return False
+            return self.posture.request_tilt_reset()
 
         if command.kind == CommandKind.WALK:
             if self.mode not in (ControllerMode.NORMAL, ControllerMode.AUTO):

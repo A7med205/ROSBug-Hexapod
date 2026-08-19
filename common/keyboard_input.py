@@ -95,6 +95,9 @@ class KeyboardInput:
         if key == "k":
             self.numeric_prefix = ""
             return KeyboardPoll(Command.skip_startup(), False, notices)
+        if key == "r":
+            self.numeric_prefix = ""
+            return KeyboardPoll(Command.reset_tilt(), False, notices)
 
         posture_mapping = POSTURE_KEYS.get(key)
         if posture_mapping is not None:
@@ -150,6 +153,7 @@ def help_text(controller_name: str) -> str:
             "Auto counted motion: type count then movement (for example 5w)",
             "Posture elevation: [(-mm), ](+mm), for example 10]",
             "Posture pitch: ,(-deg), .(+deg); roll: ;(-deg), '(+deg)",
+            "Reset posture pitch/roll, preserving elevation: r",
             "Lines: w(+Y), d(+X), s(-Y), a(-X)",
             "Self rotation: o(CCW), p(CW)",
             "Toggle q/e/z/c diagonal/orbit mode: m",

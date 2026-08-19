@@ -25,13 +25,21 @@ class PostureState:
 @dataclass(frozen=True)
 class PostureConfig:
     sample_period: float = 0.02
-    elevation_velocity: float = 0.005
-    angular_velocity: float = math.radians(5.0)
-    elevation_acceleration: float = 0.020
-    angular_acceleration: float = math.radians(20.0)
+    elevation_velocity: float = 0.015
+    angular_velocity: float = math.radians(10.0)
+    elevation_acceleration: float = 0.040
+    angular_acceleration: float = math.radians(40.0)
+    elevation_knots: Tuple[float, ...] = (-0.025, 0.0, 0.050, 0.080, 0.100)
+    roll_limit_knots: Tuple[float, ...] = tuple(
+        math.radians(value) for value in (0.0, 12.0, 20.0, 10.0, 0.0)
+    )
+    pitch_limit_knots: Tuple[float, ...] = tuple(
+        math.radians(value) for value in (0.0, 12.0, 25.0, 12.0, 0.0)
+    )
+    operating_limit_scale: float = 0.9
     zero_tolerance: float = 1.0e-9
     ik_boundary_iterations: int = 52
-    max_batch_points: int = 64
+    max_batch_points: int = 25
 
 
 @dataclass(frozen=True)
@@ -109,6 +117,40 @@ class PostureCoordinator:
             raise ValueError("max_batch_points must be positive")
         if cfg.ik_boundary_iterations < 1:
             raise ValueError("ik_boundary_iterations must be positive")
+        if not math.isfinite(cfg.operating_limit_scale) or not (
+            0.0 < cfg.operating_limit_scale <= 1.0
+        ):
+            raise ValueError("operating_limit_scale must be in (0, 1]")
+        knot_count = len(cfg.elevation_knots)
+        if knot_count < 2 or any(
+            len(limits) != knot_count
+            for limits in (cfg.roll_limit_knots, cfg.pitch_limit_knots)
+        ):
+            raise ValueError("posture limit curves must have matching knot counts")
+        if any(
+            not math.isfinite(value)
+            for curve in (
+                cfg.elevation_knots,
+                cfg.roll_limit_knots,
+                cfg.pitch_limit_knots,
+            )
+            for value in curve
+        ):
+            raise ValueError("posture limit curves must be finite")
+        if any(
+            following <= previous
+            for previous, following in zip(
+                cfg.elevation_knots,
+                cfg.elevation_knots[1:],
+            )
+        ):
+            raise ValueError("elevation knots must be strictly increasing")
+        if any(
+            value < 0.0
+            for limits in (cfg.roll_limit_knots, cfg.pitch_limit_knots)
+            for value in limits
+        ):
+            raise ValueError("posture angular limits must be non-negative")
 
     @property
     def pending_batch(self) -> Optional[JointBatch]:
@@ -169,18 +211,62 @@ class PostureCoordinator:
             yaw=start.yaw + fraction * (target.yaw - start.yaw),
         )
 
-    def _clamp_target_to_ik(self, target: BasePose3D) -> BasePose3D:
-        if self.model.base_pose_is_reachable(target):
+    def angular_limit_at_elevation(self, axis: str, elevation: float) -> float:
+        cfg = self.config
+        if axis == PostureAxis.ROLL:
+            limits = cfg.roll_limit_knots
+        elif axis == PostureAxis.PITCH:
+            limits = cfg.pitch_limit_knots
+        else:
+            raise ValueError("angular limits only apply to roll and pitch")
+
+        if elevation <= cfg.elevation_knots[0]:
+            raw_limit = limits[0]
+        elif elevation >= cfg.elevation_knots[-1]:
+            raw_limit = limits[-1]
+        else:
+            raw_limit = limits[-1]
+            for index in range(len(cfg.elevation_knots) - 1):
+                lower_z = cfg.elevation_knots[index]
+                upper_z = cfg.elevation_knots[index + 1]
+                if lower_z <= elevation <= upper_z:
+                    fraction = (elevation - lower_z) / (upper_z - lower_z)
+                    raw_limit = limits[index] + fraction * (
+                        limits[index + 1] - limits[index]
+                    )
+                    break
+        return raw_limit * cfg.operating_limit_scale
+
+    def pose_is_allowed(self, pose: BasePose3D) -> bool:
+        cfg = self.config
+        tolerance = cfg.zero_tolerance
+        if not (
+            cfg.elevation_knots[0] - tolerance
+            <= pose.z
+            <= cfg.elevation_knots[-1] + tolerance
+        ):
+            return False
+        if abs(pose.roll) > tolerance and abs(pose.pitch) > tolerance:
+            return False
+        if abs(pose.roll) > self.angular_limit_at_elevation(PostureAxis.ROLL, pose.z) + tolerance:
+            return False
+        pitch_limit = self.angular_limit_at_elevation(PostureAxis.PITCH, pose.z)
+        if abs(pose.pitch) > pitch_limit + tolerance:
+            return False
+        return self.model.base_pose_is_reachable(pose)
+
+    def _clamp_target(self, target: BasePose3D) -> BasePose3D:
+        if self.pose_is_allowed(target):
             return target
-        if not self.model.base_pose_is_reachable(self.current_pose):
-            raise RuntimeError("confirmed posture is outside the IK workspace")
+        if not self.pose_is_allowed(self.current_pose):
+            raise RuntimeError("confirmed posture is outside its operating limits")
 
         low = 0.0
         high = 1.0
         for _ in range(self.config.ik_boundary_iterations):
             middle = (low + high) * 0.5
             candidate = self._interpolate_pose(self.current_pose, target, middle)
-            if self.model.base_pose_is_reachable(candidate):
+            if self.pose_is_allowed(candidate):
                 low = middle
             else:
                 high = middle
@@ -226,6 +312,8 @@ class PostureCoordinator:
         samples: List[_PostureSample] = []
         for fraction in self._profile_fractions(distance, velocity, acceleration):
             pose = self._interpolate_pose(start, target, fraction)
+            if not self.pose_is_allowed(pose):
+                raise RuntimeError("posture profile left its operating limits")
             joints = tuple(self.model.joint_goal_for_base_pose(pose, clamp_reach=False))
             samples.append(_PostureSample(pose, joints))
         return samples
@@ -273,7 +361,7 @@ class PostureCoordinator:
             )
         ):
             return False
-        target = self._clamp_target_to_ik(requested_target)
+        target = self._clamp_target(requested_target)
         applied_delta = self._axis_value(target, axis) - start_value
         self.last_plan_result = PosturePlanResult(axis, delta, applied_delta)
         self._job = self._make_job(
@@ -286,6 +374,37 @@ class PostureCoordinator:
             self.state = PostureState.MOVING
         return True
 
+    def request_tilt_reset(self) -> bool:
+        """Smoothly zero the active tilt axis while preserving elevation."""
+
+        if self.is_busy or self._return_requested:
+            return False
+
+        tolerance = self.config.zero_tolerance
+        if abs(self.current_pose.pitch) > tolerance:
+            axis = PostureAxis.PITCH
+        elif abs(self.current_pose.roll) > tolerance:
+            axis = PostureAxis.ROLL
+        else:
+            return True
+
+        start_value = self._axis_value(self.current_pose, axis)
+        target = self._with_axis(self.current_pose, axis, 0.0)
+        self.last_plan_result = PosturePlanResult(
+            axis,
+            -start_value,
+            -start_value,
+        )
+        self._job = self._make_job(
+            self.current_pose,
+            target,
+            axis,
+            f"posture reset {axis}",
+        )
+        if self._job is not None:
+            self.state = PostureState.MOVING
+        return True
+
     def request_return_to_neutral(self) -> bool:
         self._return_requested = True
         if not self.is_busy and self.is_neutral:
@@ -293,6 +412,23 @@ class PostureCoordinator:
             self.state = PostureState.NEUTRAL
         elif self._job is None or self._job.is_return:
             self.state = PostureState.RETURNING
+        return True
+
+    def request_interrupt(self) -> bool:
+        """Discard the active profile after its currently executing batch."""
+
+        if self._job is None:
+            return False
+        self._return_requested = False
+        if self._pending is None:
+            self._job = None
+            self.state = (
+                PostureState.NEUTRAL
+                if self.is_neutral
+                else PostureState.POSTURE_HOLD
+            )
+        else:
+            self._job.stop_after_pending = True
         return True
 
     def cancel_return(self) -> None:

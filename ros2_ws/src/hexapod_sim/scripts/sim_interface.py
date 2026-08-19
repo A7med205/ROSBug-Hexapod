@@ -121,6 +121,8 @@ def _describe_command(command) -> str:
             f"{command.posture_axis} "
             f"{math.degrees(command.posture_delta):+.1f} deg"
         )
+    if command.kind == CommandKind.RESET_TILT:
+        return "reset posture pitch/roll"
     return command.kind
 
 

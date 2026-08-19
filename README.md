@@ -24,9 +24,8 @@ posture generator, and mode coordinator.
   `FollowJointTrajectory` adapter.
 
 Both adapters receive the same `JointBatch` values from the core. Gait batches
-end at half-step boundaries. Posture profiles are split into at most 64 points
-per batch for the existing firmware protocol without changing the logical
-posture command.
+end at half-step boundaries. Posture profiles use 25-point (0.5-second)
+boundaries so an active motion can be interrupted without returning neutral.
 
 ## Keyboard controls
 
@@ -34,7 +33,7 @@ posture command.
 | --- | --- |
 | `u` | Explicit startup/stand sequence |
 | `k` | Skip startup and assert the robot is already standing |
-| `0` | Graceful gait stop, or return posture to neutral |
+| `0` | Graceful gait stop; in posture, interrupt then return neutral |
 | `t` | Cycle normal → auto → posture → normal |
 | `5w` | Example auto command: five steps in `+Y` |
 | `w`, `d`, `s`, `a` | Linear motion |
@@ -44,6 +43,7 @@ posture command.
 | `10]`, `10[` | Raise/lower the body by 10 mm in posture mode |
 | `5.`, `5,` | Add/subtract 5° pitch in posture mode |
 | `5'`, `5;` | Add/subtract 5° roll in posture mode |
+| `r` | Reset pitch/roll to zero while preserving elevation |
 | `x` | Quit after the currently executing batch |
 
 Walking commands are ignored until startup completes or `k` explicitly skips
@@ -74,18 +74,32 @@ back to zero before the other tilt axis is accepted. Posture commands are not
 queued, and a completed non-neutral command enters `POSTURE_HOLD`, where the
 next posture command can be accepted.
 
-Posture trajectories use a 20 ms cubic smoothstep profile. Defaults are 5 mm/s
-and 20 mm/s² for elevation, and 5°/s and 20°/s² for pitch and roll. A requested
-pose outside the six-leg IK workspace is reduced along the requested rigid-body
-motion to the last globally reachable pose; individual legs are never clamped
-independently. The adapter reports the requested and applied delta when this
-happens. These are geometric limits only and are intended to support simulation
-commissioning of the final operational limits.
+Posture trajectories use a 20 ms cubic smoothstep profile. Defaults are 15 mm/s
+and 40 mm/s² for elevation, and 10°/s and 40°/s² for pitch and roll. The measured
+operating envelope is linearly interpolated between these elevation knots:
+
+| Elevation | Raw roll limit | Raw pitch limit |
+| ---: | ---: | ---: |
+| -25 mm | 0° | 0° |
+| 0 mm | 12° | 12° |
+| 50 mm | 20° | 25° |
+| 80 mm | 10° | 12° |
+| 100 mm | 0° | 0° |
+
+Angular limits use an operating scale of 0.9. The complete requested rigid-body
+pose is reduced along its motion path to the first operating-envelope or IK
+boundary; individual legs are never clamped independently. The adapter reports
+the requested and applied delta when this happens.
 
 Leaving posture mode removes pitch or roll first, then returns elevation to
 zero, and activates normal or auto mode only after the canonical stationary
-pose is confirmed. `0` performs the same neutral return while remaining in
-posture mode.
+pose is confirmed. While a posture command is active, the first `0` discards
+its remaining points after the current 25-point boundary and enters
+`POSTURE_HOLD`. A subsequent `0` from that hold returns to neutral while
+remaining in posture mode. New posture commands are rejected while a command
+is active; they do not replace or queue behind it. `r` uses the same smoothed,
+non-queued motion to zero the active pitch or roll axis without changing
+elevation.
 
 There is currently no emergency-stop protocol. A serial or ROS batch already
 in progress runs to completion. Use `0` for the coordinated final half-step.

@@ -14,6 +14,7 @@ class CommandKind:
     SET_MODE = "set_mode"
     WALK = "walk"
     POSTURE = "posture"
+    RESET_TILT = "reset_tilt"
 
 
 class ControllerMode:
@@ -80,3 +81,7 @@ class Command:
             posture_axis=axis,
             posture_delta=delta,
         )
+
+    @classmethod
+    def reset_tilt(cls) -> "Command":
+        return cls(CommandKind.RESET_TILT)

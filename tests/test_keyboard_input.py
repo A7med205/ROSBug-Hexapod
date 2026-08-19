@@ -17,6 +17,11 @@ class KeyboardInputTest(unittest.TestCase):
     def test_bare_zero_is_stop(self):
         self.assertEqual(self.keyboard.feed_key("0").command, Command.stop())
 
+    def test_reset_tilt_clears_numeric_prefix(self):
+        self.keyboard.feed_key("5")
+        self.assertEqual(self.keyboard.feed_key("r").command, Command.reset_tilt())
+        self.assertEqual(self.keyboard.numeric_prefix, "")
+
     def test_count_prefix_is_attached_to_movement(self):
         self.assertIsNone(self.keyboard.feed_key("1").command)
         self.assertIsNone(self.keyboard.feed_key("0").command)
