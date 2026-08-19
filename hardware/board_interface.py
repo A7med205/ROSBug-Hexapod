@@ -135,7 +135,7 @@ def _describe_command(command) -> str:
     if command.kind == CommandKind.TOGGLE_MODE:
         return "cycle normal/auto/posture mode"
     if command.kind == CommandKind.SIT_DOWN:
-        return "sit down and restore startup lock"
+        return "sit down and restore standup lock"
     if command.kind == CommandKind.POSTURE:
         if command.posture_axis == PostureAxis.ELEVATION:
             return f"objective elevation {command.posture_value * 1000.0:.1f} mm"

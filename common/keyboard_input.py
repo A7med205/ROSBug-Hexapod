@@ -89,10 +89,10 @@ class KeyboardInput:
             return KeyboardPoll(Command.toggle_mode(), False, notices)
         if key == "u":
             self.numeric_prefix = ""
-            return KeyboardPoll(Command.startup(), False, notices)
+            return KeyboardPoll(Command.stand_up(), False, notices)
         if key == "k":
             self.numeric_prefix = ""
-            return KeyboardPoll(Command.skip_startup(), False, notices)
+            return KeyboardPoll(Command.skip_stand_up(), False, notices)
         if key == "j":
             self.numeric_prefix = ""
             return KeyboardPoll(Command.sit_down(), False, notices)
@@ -161,9 +161,9 @@ def help_text(controller_name: str) -> str:
     return "\n".join(
         (
             controller_name,
-            "Startup/stand: u",
-            "Skip startup (assert already standing): k",
-            "Sit down and restore the startup lock: j",
+            "Stand up: u",
+            "Skip standup (assert already standing): k",
+            "Sit down and restore the standup lock: j",
             "Graceful stop: 0",
             "Cycle normal/auto/posture mode: t",
             "Auto counted motion: type count then movement (for example 5w)",

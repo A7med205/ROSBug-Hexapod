@@ -251,7 +251,7 @@ class PostureCoordinatorTest(unittest.TestCase):
 class ThreeModeCoordinatorTest(unittest.TestCase):
     def setUp(self):
         self.coordinator = HexapodCoordinator()
-        self.assertTrue(self.coordinator.request(Command.skip_startup()))
+        self.assertTrue(self.coordinator.request(Command.skip_stand_up()))
 
     def drain(self):
         batches = []
@@ -277,19 +277,44 @@ class ThreeModeCoordinatorTest(unittest.TestCase):
         self.coordinator.request(Command.toggle_mode())
         self.assertEqual(self.coordinator.mode, ControllerMode.NORMAL)
 
-    def test_sit_down_from_stationary_posture_returns_to_readiness_lock(self):
+    def test_sitdown_standup_cycle_preserves_posture_mode(self):
         self.enter_posture()
         self.assertTrue(self.coordinator.is_stationary)
         self.assertTrue(self.coordinator.request(Command.sit_down()))
-        self.assertEqual(self.coordinator.mode, ControllerMode.NORMAL)
+        self.assertEqual(self.coordinator.mode, ControllerMode.POSTURE)
+        self.assertEqual(self.coordinator.requested_mode, ControllerMode.POSTURE)
 
         batch = self.coordinator.next_batch()
-        self.assertEqual(batch.phase_name, "sit-down")
+        self.assertEqual(batch.phase_name, "sitdown")
         self.coordinator.complete_batch(batch.goal_id)
 
-        self.assertEqual(self.coordinator.state, ControllerState.AWAITING_STARTUP)
+        self.assertEqual(self.coordinator.state, ControllerState.AWAITING_STAND_UP)
+        self.assertEqual(self.coordinator.mode, ControllerMode.POSTURE)
+        self.assertEqual(self.coordinator.requested_mode, ControllerMode.POSTURE)
         self.assertFalse(self.coordinator.request(Command.toggle_mode()))
-        self.assertTrue(self.coordinator.request(Command.startup()))
+        self.assertFalse(self.coordinator.request(Command.elevation(0.060)))
+        self.assertTrue(self.coordinator.request(Command.stand_up()))
+        names = [batch.phase_name for batch in self.drain()]
+        self.assertEqual(names, ["standup pose", "standup descent"])
+        self.assertEqual(self.coordinator.mode, ControllerMode.POSTURE)
+        self.assertEqual(self.coordinator.requested_mode, ControllerMode.POSTURE)
+        self.assertTrue(self.coordinator.is_stationary)
+
+    def test_sitdown_standup_cycle_preserves_auto_mode(self):
+        self.assertTrue(self.coordinator.request(Command.toggle_mode()))
+        self.assertEqual(self.coordinator.mode, ControllerMode.AUTO)
+        self.assertTrue(self.coordinator.request(Command.sit_down()))
+
+        sitdown = self.coordinator.next_batch()
+        self.coordinator.complete_batch(sitdown.goal_id)
+        self.assertEqual(self.coordinator.mode, ControllerMode.AUTO)
+        self.assertEqual(self.coordinator.requested_mode, ControllerMode.AUTO)
+        self.assertTrue(self.coordinator.request(Command.stand_up()))
+        self.drain()
+
+        self.assertEqual(self.coordinator.mode, ControllerMode.AUTO)
+        self.assertEqual(self.coordinator.requested_mode, ControllerMode.AUTO)
+        self.assertTrue(self.coordinator.is_stationary)
 
     def test_posture_holds_and_exit_returns_to_stationary(self):
         self.enter_posture()
@@ -388,16 +413,16 @@ class ThreeModeCoordinatorTest(unittest.TestCase):
                 elevation_acceleration=0.2,
             )
         )
-        other.request(Command.startup())
-        startup_ids = []
+        other.request(Command.stand_up())
+        standup_ids = []
         for _ in range(2):
             batch = other.next_batch()
-            startup_ids.append(batch.goal_id)
+            standup_ids.append(batch.goal_id)
             other.complete_batch(batch.goal_id)
         other.request(Command.set_mode(ControllerMode.POSTURE))
         other.request(Command.elevation(0.051))
         posture = other.next_batch()
-        self.assertGreater(posture.goal_id, max(startup_ids))
+        self.assertGreater(posture.goal_id, max(standup_ids))
 
 
 if __name__ == "__main__":

@@ -7,8 +7,8 @@ from typing import Optional
 
 
 class CommandKind:
-    STARTUP = "startup"
-    SKIP_STARTUP = "skip_startup"
+    STAND_UP = "stand_up"
+    SKIP_STAND_UP = "skip_stand_up"
     SIT_DOWN = "sit_down"
     STOP = "stop"
     TOGGLE_MODE = "toggle_mode"
@@ -52,12 +52,12 @@ class Command:
     posture_value: Optional[float] = None
 
     @classmethod
-    def startup(cls) -> "Command":
-        return cls(CommandKind.STARTUP)
+    def stand_up(cls) -> "Command":
+        return cls(CommandKind.STAND_UP)
 
     @classmethod
-    def skip_startup(cls) -> "Command":
-        return cls(CommandKind.SKIP_STARTUP)
+    def skip_stand_up(cls) -> "Command":
+        return cls(CommandKind.SKIP_STAND_UP)
 
     @classmethod
     def sit_down(cls) -> "Command":

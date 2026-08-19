@@ -26,9 +26,9 @@ from robot_core import (
 
 
 class ControllerState:
-    AWAITING_STARTUP = "awaiting_startup"
-    STARTING = "starting"
-    SITTING = "sitting"
+    AWAITING_STAND_UP = "awaiting_stand_up"
+    STANDING_UP = "standing_up"
+    SITTING_DOWN = "sitting_down"
     STATIONARY = "stationary"
     WALKING = "walking"
 
@@ -56,9 +56,9 @@ class GaitConfig(RobotConfig):
     limit_radius: float = 0.04
     swing_height: float = 0.025
     sample_period: float = 0.02
-    startup_z: float = 0.01
-    startup_velocity: float = 0.05
-    startup_hold: float = 2.0
+    standup_z: float = 0.01
+    standup_velocity: float = 0.05
+    standup_hold: float = 2.0
 
     linear_speed_y: float = 0.10
     linear_speed_x: float = 0.10
@@ -456,7 +456,7 @@ class LiteGaitCoordinator:
     ) -> None:
         self.config = config or GaitConfig()
         self.model = LiteGaitModel(self.config)
-        self.state = ControllerState.AWAITING_STARTUP
+        self.state = ControllerState.AWAITING_STAND_UP
         self.mode = ControllerMode.NORMAL
         self.requested_mode = ControllerMode.NORMAL
         self.requested_trajectory_id = 0
@@ -464,7 +464,7 @@ class LiteGaitCoordinator:
         self.auto_job: Optional[AutoJob] = None
         self.next_full_pull_tripod = "B"
         self._walk_half = "first"
-        self._startup_stage = ""
+        self._standup_stage = ""
         self._goal_ids = goal_id_allocator or GoalIdAllocator()
         self._pending: Optional[_PendingBatch] = None
         self.current_joint_goal = self.model.neutral_joint_goal()
@@ -492,7 +492,11 @@ class LiteGaitCoordinator:
     def _request_mode(self, target_mode: str) -> bool:
         if target_mode not in (ControllerMode.NORMAL, ControllerMode.AUTO):
             return False
-        if self.state in (ControllerState.AWAITING_STARTUP, ControllerState.STARTING):
+        if self.state in (
+            ControllerState.AWAITING_STAND_UP,
+            ControllerState.STANDING_UP,
+            ControllerState.SITTING_DOWN,
+        ):
             return False
 
         motion_in_progress = self.state == ControllerState.WALKING or self._pending is not None
@@ -526,23 +530,21 @@ class LiteGaitCoordinator:
         return self._request_mode(target_mode)
 
     def request(self, command: Command) -> bool:
-        if command.kind == CommandKind.STARTUP:
-            if self.state != ControllerState.AWAITING_STARTUP or self._pending:
+        if command.kind == CommandKind.STAND_UP:
+            if self.state != ControllerState.AWAITING_STAND_UP or self._pending:
                 return False
-            self.state = ControllerState.STARTING
-            self._startup_stage = "pose"
+            self.state = ControllerState.STANDING_UP
+            self._standup_stage = "pose"
             return True
 
-        if command.kind == CommandKind.SKIP_STARTUP:
-            if self.state != ControllerState.AWAITING_STARTUP or self._pending:
+        if command.kind == CommandKind.SKIP_STAND_UP:
+            if self.state != ControllerState.AWAITING_STAND_UP or self._pending:
                 return False
             # This is an assertion, not a movement: the caller guarantees that
             # the physical robot already matches the canonical standing pose.
             self.current_joint_goal = self.model.neutral_joint_goal()
-            self.mode = ControllerMode.NORMAL
-            self.requested_mode = ControllerMode.NORMAL
             self.auto_job = None
-            self._startup_stage = ""
+            self._standup_stage = ""
             self._reset_motion_to_stationary()
             return True
 
@@ -552,17 +554,15 @@ class LiteGaitCoordinator:
             self.requested_trajectory_id = 0
             self.active_trajectory_id = 0
             self.auto_job = None
-            self.mode = ControllerMode.NORMAL
-            self.requested_mode = ControllerMode.NORMAL
             self._walk_half = "first"
-            self._startup_stage = ""
-            self.state = ControllerState.SITTING
+            self._standup_stage = ""
+            self.state = ControllerState.SITTING_DOWN
             return True
 
         if self.state in (
-            ControllerState.AWAITING_STARTUP,
-            ControllerState.STARTING,
-            ControllerState.SITTING,
+            ControllerState.AWAITING_STAND_UP,
+            ControllerState.STANDING_UP,
+            ControllerState.SITTING_DOWN,
         ):
             return False
 
@@ -585,7 +585,11 @@ class LiteGaitCoordinator:
             return False
         if command.trajectory_id not in self.model.MOVING_TRAJECTORY_IDS:
             return False
-        if self.state in (ControllerState.AWAITING_STARTUP, ControllerState.STARTING):
+        if self.state in (
+            ControllerState.AWAITING_STAND_UP,
+            ControllerState.STANDING_UP,
+            ControllerState.SITTING_DOWN,
+        ):
             return False
 
         # Auto jobs are atomic. Movement commands received while one is active
@@ -687,26 +691,26 @@ class LiteGaitCoordinator:
         )
         return batch
 
-    def _prepare_startup_pose(self) -> JointBatch:
+    def _prepare_standup_pose(self) -> JointBatch:
         cfg = self.config
-        startup_angles = self.model.inverse_kinematics(
-            Point3D(cfg.home_x, cfg.home_y, cfg.startup_z)
+        standup_angles = self.model.inverse_kinematics(
+            Point3D(cfg.home_x, cfg.home_y, cfg.standup_z)
         )
-        end_goal = list(startup_angles) * len(self.model.legs)
+        end_goal = list(standup_angles) * len(self.model.legs)
         batch = self._make_batch(
-            "startup pose",
+            "standup pose",
             [end_goal],
-            hold_after=cfg.startup_hold,
+            hold_after=cfg.standup_hold,
         )
-        self._pending = _PendingBatch(batch, end_goal, "startup_pose")
+        self._pending = _PendingBatch(batch, end_goal, "standup_pose")
         return batch
 
-    def _startup_descent_points(self) -> Tuple[List[List[float]], List[float]]:
+    def _standup_descent_points(self) -> Tuple[List[List[float]], List[float]]:
         cfg = self.config
-        if cfg.startup_velocity <= 0.0:
-            raise ValueError("startup_velocity must be positive")
-        delta = cfg.home_z - cfg.startup_z
-        step_distance = cfg.startup_velocity * cfg.sample_period
+        if cfg.standup_velocity <= 0.0:
+            raise ValueError("standup_velocity must be positive")
+        delta = cfg.home_z - cfg.standup_z
+        step_distance = cfg.standup_velocity * cfg.sample_period
         step_count = max(1, math.ceil(abs(delta) / step_distance))
         points: List[List[float]] = []
         for step_index in range(1, step_count + 1):
@@ -714,7 +718,7 @@ class LiteGaitCoordinator:
             tip = Point3D(
                 cfg.home_x,
                 cfg.home_y,
-                cfg.startup_z + progress * delta,
+                cfg.standup_z + progress * delta,
             )
             desired = list(self.model.inverse_kinematics(tip)) * len(self.model.legs)
             points.append(desired)
@@ -724,42 +728,42 @@ class LiteGaitCoordinator:
         points[-1] = list(home_goal)
         return points, home_goal
 
-    def _prepare_startup_descent(self) -> JointBatch:
-        points, home_goal = self._startup_descent_points()
-        batch = self._make_batch("startup descent", points)
-        self._pending = _PendingBatch(batch, home_goal, "startup_descent")
+    def _prepare_standup_descent(self) -> JointBatch:
+        points, home_goal = self._standup_descent_points()
+        batch = self._make_batch("standup descent", points)
+        self._pending = _PendingBatch(batch, home_goal, "standup_descent")
         return batch
 
     def _prepare_sit_down(self) -> JointBatch:
-        """Reverse the startup tip descent and finish at its snap pose."""
+        """Reverse the standup tip descent and finish at its snap pose."""
 
         cfg = self.config
-        descent_points, _home_goal = self._startup_descent_points()
-        startup_angles = self.model.inverse_kinematics(
-            Point3D(cfg.home_x, cfg.home_y, cfg.startup_z)
+        descent_points, _home_goal = self._standup_descent_points()
+        standup_angles = self.model.inverse_kinematics(
+            Point3D(cfg.home_x, cfg.home_y, cfg.standup_z)
         )
-        startup_goal = list(startup_angles) * len(self.model.legs)
+        standup_goal = list(standup_angles) * len(self.model.legs)
         points = list(reversed(descent_points[:-1]))
-        points.append(list(startup_goal))
-        batch = self._make_batch("sit-down", points)
-        self._pending = _PendingBatch(batch, startup_goal, "sit_down")
+        points.append(list(standup_goal))
+        batch = self._make_batch("sitdown", points)
+        self._pending = _PendingBatch(batch, standup_goal, "sit_down")
         return batch
 
     def next_batch(self) -> Optional[JointBatch]:
         if self._pending is not None:
             return None
 
-        if self.state == ControllerState.STARTING:
-            if self._startup_stage == "pose":
-                return self._prepare_startup_pose()
-            if self._startup_stage == "descent":
-                return self._prepare_startup_descent()
-            raise RuntimeError("invalid startup stage")
+        if self.state == ControllerState.STANDING_UP:
+            if self._standup_stage == "pose":
+                return self._prepare_standup_pose()
+            if self._standup_stage == "descent":
+                return self._prepare_standup_descent()
+            raise RuntimeError("invalid standup stage")
 
-        if self.state == ControllerState.SITTING:
+        if self.state == ControllerState.SITTING_DOWN:
             return self._prepare_sit_down()
 
-        if self.state == ControllerState.AWAITING_STARTUP:
+        if self.state == ControllerState.AWAITING_STAND_UP:
             return None
 
         if self.state == ControllerState.STATIONARY:
@@ -857,19 +861,17 @@ class LiteGaitCoordinator:
                 raise RuntimeError("auto job half-step count underflow")
             self.auto_job.remaining_half_steps -= 1
 
-        if pending.transition == "startup_pose":
-            self._startup_stage = "descent"
-        elif pending.transition == "startup_descent":
-            self._startup_stage = ""
+        if pending.transition == "standup_pose":
+            self._standup_stage = "descent"
+        elif pending.transition == "standup_descent":
+            self._standup_stage = ""
             self._finish_motion()
         elif pending.transition == "sit_down":
-            self._startup_stage = ""
-            self.state = ControllerState.AWAITING_STARTUP
+            self._standup_stage = ""
+            self.state = ControllerState.AWAITING_STAND_UP
             self.active_trajectory_id = 0
             self.requested_trajectory_id = 0
             self.auto_job = None
-            self.mode = ControllerMode.NORMAL
-            self.requested_mode = ControllerMode.NORMAL
             self.next_full_pull_tripod = "B"
             self._walk_half = "first"
         elif pending.transition == "gait_start":

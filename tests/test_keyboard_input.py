@@ -9,9 +9,9 @@ class KeyboardInputTest(unittest.TestCase):
     def setUp(self):
         self.keyboard = KeyboardInput()
 
-    def test_startup_skip_and_mode_commands(self):
-        self.assertEqual(self.keyboard.feed_key("u").command, Command.startup())
-        self.assertEqual(self.keyboard.feed_key("k").command, Command.skip_startup())
+    def test_standup_skip_and_mode_commands(self):
+        self.assertEqual(self.keyboard.feed_key("u").command, Command.stand_up())
+        self.assertEqual(self.keyboard.feed_key("k").command, Command.skip_stand_up())
         self.assertEqual(self.keyboard.feed_key("j").command, Command.sit_down())
         self.assertEqual(self.keyboard.feed_key("t").command, Command.toggle_mode())
 

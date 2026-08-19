@@ -100,7 +100,7 @@ command topic: both adapters read the terminal directly.
 
 1. Keyboard input becomes a transport-neutral command. Input is latched rather
    than queued; after terminal draining, only the latest command remains.
-2. The top-level coordinator enforces startup readiness, owns the active mode,
+2. The top-level coordinator enforces standup readiness, owns the active mode,
    and gives either gait or posture exclusive control of joint output.
 3. The gait core generates motion profiles for a tripod gait by transforming
    body-frame displacement into the local tip displacement that keeps each
@@ -110,7 +110,7 @@ command topic: both adapters read the terminal directly.
    the neutral midpoint, and a positive half.
 5. Swing paths trace the reversed pull path in x/y. Their z coordinate adds a
    sinusoid, `swing_height × sin(πs)`, producing a ground-to-ground arc for
-   startup/stop halves or a continuous arc across a full step.
+   start/stop halves or a continuous arc across a full step.
 6. Cartesian construction paths are temporary. After IK conversion, only
    synchronized, future-setpoint joint templates are retained. The already
    confirmed point at a phase boundary is not stored or transmitted again.
@@ -152,12 +152,13 @@ the first sample that reaches the limit.
 - Toggling modes while moving first requests a stationary transition. Leaving
   posture removes pitch or roll, returns to the stationary objective elevation,
   and only then activates normal or auto mode.
-- Startup is explicit. `u` commands the startup pose and descent; `k` sends no
+- Standup is explicit. `u` commands the standup pose and descent; `k` sends no
   movement and asserts that the robot is already at the canonical standing
-  pose. From a stationary pose, `j` reverses the startup tip motion and ends at
-  the pose into which startup initially snaps. Completion restores the startup
-  readiness lock; startup (or the explicit skip assertion) is then required
-  before other commands are accepted.
+  pose. From a stationary pose, `j` reverses the standup tip motion and ends at
+  the pose into which standup initially snaps. Completion restores the standup
+  readiness lock; standup (or the explicit skip assertion) is then required
+  before other commands are accepted. A sitdown/standup cycle preserves the
+  current normal, auto, or posture mode.
 
 There is no emergency-stop protocol. `0` is a coordinated stop, and a serial
 or ROS batch already executing runs to its next supported boundary.
@@ -269,9 +270,9 @@ The controls are identical for hardware and simulation.
 
 | Key | Command |
 | --- | --- |
-| `u` | Explicit startup/stand sequence |
-| `k` | Skip startup and assert that the robot is already standing |
-| `j` | Sit down from stationary and restore the startup lock |
+| `u` | Explicit standup sequence |
+| `k` | Skip standup and assert that the robot is already standing |
+| `j` | Sit down from stationary and restore the standup lock |
 | `0` | Graceful gait stop; in posture, interrupt and then return neutral |
 | `t` | Cycle normal → auto → posture → normal |
 | `w`, `d`, `s`, `a` | Move `+Y`, `+X`, `-Y`, `-X` |
@@ -359,10 +360,10 @@ along its motion path rather than clamping legs independently.
 | Self-rotation angular speed | 0.40 rad/s |
 | Orbit angular speed | 0.30 rad/s |
 | External orbit radius | 0.30 m |
-| Startup local tip z | +10 mm |
-| Startup descent speed | 0.05 m/s |
-| Startup pose hold | 2.0 s |
-| Startup descent | 60 points / 1.2 s |
+| Standup local tip z | +10 mm |
+| Standup descent speed | 0.05 m/s |
+| Standup pose hold | 2.0 s |
+| Standup descent | 60 points / 1.2 s |
 | Sit-down reverse motion | 60 points / 1.2 s |
 
 Reverse trajectory IDs 8–14 evaluate IDs 1–7 at negative time. Current
@@ -516,7 +517,7 @@ source /opt/ros/humble/setup.bash
 colcon build --symlink-install --packages-select hexapod_sim
 ```
 
-The tests cover startup/sit-down readiness locking, exact executable template
+The tests cover standup/sitdown readiness locking, exact executable template
 sizes, equal leg sequence lengths, future-only boundary points, sub-degree
 sample propagation, normal/auto/posture transitions, counted and aborted gait
 jobs, midpoint direction latching, objective elevation targeting, pitch/roll

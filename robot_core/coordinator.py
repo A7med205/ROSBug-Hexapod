@@ -33,8 +33,17 @@ class HexapodCoordinator:
     def model(self):
         return self.gait.model
 
+    def _in_standup_cycle(self) -> bool:
+        return self.gait.state in (
+            ControllerState.AWAITING_STAND_UP,
+            ControllerState.STANDING_UP,
+            ControllerState.SITTING_DOWN,
+        )
+
     @property
     def state(self) -> str:
+        if self._in_standup_cycle():
+            return self.gait.state
         if self.mode == ControllerMode.POSTURE:
             return self.posture.state
         return self.gait.state
@@ -45,6 +54,8 @@ class HexapodCoordinator:
 
     @property
     def current_joint_goal(self):
+        if self._in_standup_cycle():
+            return self.gait.current_joint_goal
         if self.mode == ControllerMode.POSTURE:
             return self.posture.current_joint_goal
         return self.gait.current_joint_goal
@@ -65,6 +76,8 @@ class HexapodCoordinator:
 
     @property
     def is_stationary(self) -> bool:
+        if self._in_standup_cycle():
+            return False
         if self.mode == ControllerMode.POSTURE:
             return self.posture.is_neutral and not self.posture.is_busy
         return self.gait.is_stationary
@@ -75,9 +88,9 @@ class HexapodCoordinator:
 
     def _ready_for_modes(self) -> bool:
         return self.gait.state not in (
-            ControllerState.AWAITING_STARTUP,
-            ControllerState.STARTING,
-            ControllerState.SITTING,
+            ControllerState.AWAITING_STAND_UP,
+            ControllerState.STANDING_UP,
+            ControllerState.SITTING_DOWN,
         )
 
     def _activate_requested_mode_if_ready(self) -> None:
@@ -132,21 +145,18 @@ class HexapodCoordinator:
         if command.kind == CommandKind.SET_MODE:
             return command.mode is not None and self._request_mode(command.mode)
 
-        if command.kind in (CommandKind.STARTUP, CommandKind.SKIP_STARTUP):
-            if self.mode != ControllerMode.NORMAL or self.requested_mode != self.mode:
-                return False
+        if command.kind in (CommandKind.STAND_UP, CommandKind.SKIP_STAND_UP):
             return self.gait.request(command)
+
+        if not self._ready_for_modes():
+            return False
 
         if command.kind == CommandKind.SIT_DOWN:
             if not self.is_stationary:
                 return False
             if self.mode == ControllerMode.POSTURE:
                 self.gait.current_joint_goal = list(self.posture.current_joint_goal)
-            accepted = self.gait.request(command)
-            if accepted:
-                self.mode = ControllerMode.NORMAL
-                self.requested_mode = ControllerMode.NORMAL
-            return accepted
+            return self.gait.request(command)
 
         if command.kind == CommandKind.STOP:
             if self.mode == ControllerMode.POSTURE:
@@ -192,6 +202,15 @@ class HexapodCoordinator:
         if self._pending_owner is not None:
             return None
         self._activate_requested_mode_if_ready()
+
+        if self.gait.state in (
+            ControllerState.STANDING_UP,
+            ControllerState.SITTING_DOWN,
+        ):
+            batch = self.gait.next_batch()
+            if batch is not None:
+                self._pending_owner = "gait"
+            return batch
 
         if self.mode == ControllerMode.POSTURE:
             batch = self.posture.next_batch()

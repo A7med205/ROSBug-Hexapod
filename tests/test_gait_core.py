@@ -15,26 +15,26 @@ class GaitCoreTest(unittest.TestCase):
         self.coordinator = LiteGaitCoordinator()
 
     def stand_up(self):
-        self.assertTrue(self.coordinator.request(Command.startup()))
+        self.assertTrue(self.coordinator.request(Command.stand_up()))
         pose = self.coordinator.next_batch()
-        self.assertEqual(pose.phase_name, "startup pose")
+        self.assertEqual(pose.phase_name, "standup pose")
         self.coordinator.complete_batch(pose.goal_id)
         descent = self.coordinator.next_batch()
-        self.assertEqual(descent.phase_name, "startup descent")
+        self.assertEqual(descent.phase_name, "standup descent")
         self.coordinator.complete_batch(descent.goal_id)
         return pose, descent
 
-    def skip_startup(self):
-        self.assertTrue(self.coordinator.request(Command.skip_startup()))
+    def skip_stand_up(self):
+        self.assertTrue(self.coordinator.request(Command.skip_stand_up()))
         self.assertEqual(self.coordinator.state, ControllerState.STATIONARY)
 
     def enter_auto(self):
-        self.skip_startup()
+        self.skip_stand_up()
         self.assertTrue(self.coordinator.request(Command.toggle_mode()))
         self.assertEqual(self.coordinator.mode, ControllerMode.AUTO)
 
-    def test_startup_is_explicit_and_walk_is_rejected_before_it(self):
-        self.assertEqual(self.coordinator.state, ControllerState.AWAITING_STARTUP)
+    def test_standup_is_explicit_and_walk_is_rejected_before_it(self):
+        self.assertEqual(self.coordinator.state, ControllerState.AWAITING_STAND_UP)
         self.assertIsNone(self.coordinator.next_batch())
         self.assertFalse(self.coordinator.request(Command.walk(1)))
 
@@ -55,32 +55,32 @@ class GaitCoreTest(unittest.TestCase):
         self.assertEqual(cfg.self_angular_speed, 0.40)
         self.assertEqual(cfg.orbit_angular_speed, 0.30)
 
-    def test_sit_down_reverses_startup_descent_and_restores_lock(self):
-        startup_pose, startup_descent = self.stand_up()
+    def test_sit_down_reverses_standup_descent_and_restores_lock(self):
+        standup_pose, standup_descent = self.stand_up()
         self.assertTrue(self.coordinator.request(Command.sit_down()))
 
         sit_down = self.coordinator.next_batch()
-        self.assertEqual(sit_down.phase_name, "sit-down")
-        self.assertEqual(sit_down.point_count, startup_descent.point_count)
+        self.assertEqual(sit_down.phase_name, "sitdown")
+        self.assertEqual(sit_down.point_count, standup_descent.point_count)
         self.assertEqual(
             sit_down.points[:-1],
-            tuple(reversed(startup_descent.points[:-1])),
+            tuple(reversed(standup_descent.points[:-1])),
         )
-        self.assertEqual(sit_down.points[-1], startup_pose.points[-1])
+        self.assertEqual(sit_down.points[-1], standup_pose.points[-1])
         self.coordinator.complete_batch(sit_down.goal_id)
 
-        self.assertEqual(self.coordinator.state, ControllerState.AWAITING_STARTUP)
+        self.assertEqual(self.coordinator.state, ControllerState.AWAITING_STAND_UP)
         self.assertFalse(self.coordinator.request(Command.walk(1)))
         self.assertFalse(self.coordinator.request(Command.stop()))
         self.assertFalse(self.coordinator.request(Command.toggle_mode()))
         self.assertFalse(self.coordinator.request(Command.sit_down()))
-        self.assertTrue(self.coordinator.request(Command.startup()))
+        self.assertTrue(self.coordinator.request(Command.stand_up()))
         repeated_pose = self.coordinator.next_batch()
         self.assertEqual(repeated_pose.points[-1], sit_down.points[-1])
 
     def test_sit_down_requires_stationary(self):
         self.assertFalse(self.coordinator.request(Command.sit_down()))
-        self.skip_startup()
+        self.skip_stand_up()
         self.coordinator.request(Command.walk(1))
         start = self.coordinator.next_batch()
         self.assertFalse(self.coordinator.request(Command.sit_down()))
@@ -145,7 +145,7 @@ class GaitCoreTest(unittest.TestCase):
                     )
 
     def test_subdegree_joint_changes_are_not_gated(self):
-        self.skip_startup()
+        self.skip_stand_up()
         self.coordinator.request(Command.walk(1))
         batch = self.coordinator.next_batch()
         sequences = self.coordinator.model.collect_phase_sequences(
@@ -175,7 +175,7 @@ class GaitCoreTest(unittest.TestCase):
         )
 
     def test_batches_do_not_repeat_the_confirmed_boundary_point(self):
-        self.skip_startup()
+        self.skip_stand_up()
         self.coordinator.request(Command.walk(1))
 
         for _ in range(3):
@@ -189,16 +189,16 @@ class GaitCoreTest(unittest.TestCase):
         final_half = self.coordinator.next_batch()
         self.assertNotEqual(final_half.points[0], confirmed)
 
-    def test_skip_startup_asserts_neutral_without_creating_a_batch(self):
-        self.skip_startup()
+    def test_skip_standup_asserts_neutral_without_creating_a_batch(self):
+        self.skip_stand_up()
         self.assertIsNone(self.coordinator.next_batch())
         self.assertEqual(
             self.coordinator.current_joint_goal,
             self.coordinator.model.neutral_joint_goal(),
         )
         self.assertEqual(self.coordinator.mode, ControllerMode.NORMAL)
-        self.assertFalse(self.coordinator.request(Command.skip_startup()))
-        self.assertFalse(self.coordinator.request(Command.startup()))
+        self.assertFalse(self.coordinator.request(Command.skip_stand_up()))
+        self.assertFalse(self.coordinator.request(Command.stand_up()))
 
     def test_auto_mode_requires_stationary_counted_commands_of_at_least_two(self):
         self.enter_auto()
@@ -208,7 +208,7 @@ class GaitCoreTest(unittest.TestCase):
         self.assertTrue(self.coordinator.request(Command.walk(1, steps=2)))
 
         other = LiteGaitCoordinator()
-        other.request(Command.skip_startup())
+        other.request(Command.skip_stand_up())
         self.assertFalse(other.request(Command.walk(1, steps=2)))
 
     def test_two_step_auto_job_is_start_full_final_and_returns_stationary(self):
@@ -291,7 +291,7 @@ class GaitCoreTest(unittest.TestCase):
         self.assertEqual(self.coordinator.mode, ControllerMode.NORMAL)
 
     def test_mode_toggle_during_normal_walk_stops_before_entering_auto(self):
-        self.skip_startup()
+        self.skip_stand_up()
         self.coordinator.request(Command.walk(1))
         start = self.coordinator.next_batch()
         self.assertTrue(self.coordinator.request(Command.toggle_mode()))
@@ -319,7 +319,7 @@ class GaitCoreTest(unittest.TestCase):
         self.assertIsNone(self.coordinator.next_batch())
 
     def test_stationary_mode_toggle_discards_requested_normal_walk(self):
-        self.skip_startup()
+        self.skip_stand_up()
         self.coordinator.request(Command.walk(1))
         self.coordinator.request(Command.toggle_mode())
         self.assertEqual(self.coordinator.mode, ControllerMode.AUTO)
@@ -371,10 +371,10 @@ class GaitCoreTest(unittest.TestCase):
         self.stand_up()
         for trajectory_id in range(1, 15):
             coordinator = LiteGaitCoordinator()
-            coordinator.request(Command.startup())
+            coordinator.request(Command.stand_up())
             for _ in range(2):
-                startup = coordinator.next_batch()
-                coordinator.complete_batch(startup.goal_id)
+                standup = coordinator.next_batch()
+                coordinator.complete_batch(standup.goal_id)
             coordinator.request(Command.walk(trajectory_id))
             for _ in range(3):
                 batch = coordinator.next_batch()
