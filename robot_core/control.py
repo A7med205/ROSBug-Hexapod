@@ -9,6 +9,7 @@ from typing import Optional
 class CommandKind:
     STARTUP = "startup"
     SKIP_STARTUP = "skip_startup"
+    SIT_DOWN = "sit_down"
     STOP = "stop"
     TOGGLE_MODE = "toggle_mode"
     SET_MODE = "set_mode"
@@ -57,6 +58,10 @@ class Command:
     @classmethod
     def skip_startup(cls) -> "Command":
         return cls(CommandKind.SKIP_STARTUP)
+
+    @classmethod
+    def sit_down(cls) -> "Command":
+        return cls(CommandKind.SIT_DOWN)
 
     @classmethod
     def stop(cls) -> "Command":

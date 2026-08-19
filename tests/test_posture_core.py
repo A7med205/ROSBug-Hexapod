@@ -155,10 +155,12 @@ class PostureCoordinatorTest(unittest.TestCase):
         self.assertEqual(self.posture.state, PostureState.POSTURE_HOLD)
 
     def test_operating_envelope_clamps_the_complete_body_pose(self):
+        self.assertAlmostEqual(self.posture.config.limit_reference_elevation, 0.010)
+        self.assertAlmostEqual(self.posture.objective_elevation(0.0), 0.010)
         self.assertTrue(self.posture.request_delta(PostureAxis.ELEVATION, 1.0))
         result = self.posture.last_plan_result
         self.assertTrue(result.was_clamped)
-        self.assertAlmostEqual(result.applied_delta, 0.100, places=8)
+        self.assertAlmostEqual(result.applied_delta, 0.090, places=8)
 
         target = self.posture._job.samples[-1].pose
         tips = self.model.tips_for_base_pose(target)
@@ -169,7 +171,7 @@ class PostureCoordinatorTest(unittest.TestCase):
         self.assertTrue(lower.request_delta(PostureAxis.ELEVATION, -1.0))
         self.assertAlmostEqual(
             lower.last_plan_result.applied_delta,
-            -0.025,
+            -0.035,
             places=8,
         )
 
@@ -198,12 +200,12 @@ class PostureCoordinatorTest(unittest.TestCase):
         self.posture.request_delta(PostureAxis.PITCH, math.radians(100.0))
         result = self.posture.last_plan_result
         self.assertTrue(result.was_clamped)
-        self.assertAlmostEqual(math.degrees(result.applied_delta), 22.5, places=6)
+        self.assertAlmostEqual(math.degrees(result.applied_delta), 18.6, places=6)
 
     def test_elevation_change_cannot_cross_a_narrowing_tilt_envelope(self):
         self.posture.request_delta(PostureAxis.ELEVATION, 0.050)
         self.drain()
-        self.posture.request_delta(PostureAxis.PITCH, math.radians(22.5))
+        self.posture.request_delta(PostureAxis.PITCH, math.radians(18.6))
         self.drain()
 
         self.assertTrue(self.posture.request_delta(PostureAxis.ELEVATION, 0.030))
@@ -254,6 +256,20 @@ class ThreeModeCoordinatorTest(unittest.TestCase):
         self.assertEqual(self.coordinator.mode, ControllerMode.POSTURE)
         self.coordinator.request(Command.toggle_mode())
         self.assertEqual(self.coordinator.mode, ControllerMode.NORMAL)
+
+    def test_sit_down_from_stationary_posture_returns_to_readiness_lock(self):
+        self.enter_posture()
+        self.assertTrue(self.coordinator.is_stationary)
+        self.assertTrue(self.coordinator.request(Command.sit_down()))
+        self.assertEqual(self.coordinator.mode, ControllerMode.NORMAL)
+
+        batch = self.coordinator.next_batch()
+        self.assertEqual(batch.phase_name, "sit-down")
+        self.coordinator.complete_batch(batch.goal_id)
+
+        self.assertEqual(self.coordinator.state, ControllerState.AWAITING_STARTUP)
+        self.assertFalse(self.coordinator.request(Command.toggle_mode()))
+        self.assertTrue(self.coordinator.request(Command.startup()))
 
     def test_posture_holds_and_exit_returns_to_stationary(self):
         self.enter_posture()

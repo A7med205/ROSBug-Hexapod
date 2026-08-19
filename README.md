@@ -146,13 +146,18 @@ the first sample that reaches the limit.
   pitch, or roll deltas. Elevation can coexist with either tilt. Pitch and roll
   cannot coexist; reset the active tilt before selecting the other axis.
   Completed non-neutral commands enter `POSTURE_HOLD`, so another posture
-  command can continue from the confirmed pose.
+  command can continue from the confirmed pose. Its displayed and commanded
+  elevation zero is re-anchored to the confirmed stationary pose whenever the
+  mode is entered.
 - Toggling modes while moving first requests a stationary transition. Leaving
   posture removes pitch or roll, returns elevation to zero, and only then
   activates normal or auto mode.
 - Startup is explicit. `u` commands the startup pose and descent; `k` sends no
   movement and asserts that the robot is already at the canonical standing
-  pose.
+  pose. From a stationary pose, `j` reverses the startup tip motion and ends at
+  the pose into which startup initially snaps. Completion restores the startup
+  readiness lock; startup (or the explicit skip assertion) is then required
+  before other commands are accepted.
 
 There is no emergency-stop protocol. `0` is a coordinated stop, and a serial
 or ROS batch already executing runs to its next supported boundary.
@@ -266,6 +271,7 @@ The controls are identical for hardware and simulation.
 | --- | --- |
 | `u` | Explicit startup/stand sequence |
 | `k` | Skip startup and assert that the robot is already standing |
+| `j` | Sit down from stationary and restore the startup lock |
 | `0` | Graceful gait stop; in posture, interrupt and then return neutral |
 | `t` | Cycle normal → auto → posture → normal |
 | `w`, `d`, `s`, `a` | Move `+Y`, `+X`, `-Y`, `-X` |
@@ -347,24 +353,25 @@ along its motion path rather than clamping legs independently.
 | Sample period / rate | 20 ms / 50 Hz |
 | Tip travel limit radius | 40 mm |
 | Swing height | 25 mm |
-| `+X`, `+Y`, diagonal component speed | 0.20 m/s |
-| Self-rotation angular speed | 0.80 rad/s |
-| Orbit angular speed | 0.60 rad/s |
+| `+X`, `+Y`, diagonal component speed | 0.10 m/s |
+| Self-rotation angular speed | 0.40 rad/s |
+| Orbit angular speed | 0.30 rad/s |
 | External orbit radius | 0.30 m |
 | Startup tip z | +10 mm |
 | Startup descent speed | 0.05 m/s |
 | Startup pose hold | 2.0 s |
 | Startup descent | 60 points / 1.2 s |
+| Sit-down reverse motion | 60 points / 1.2 s |
 
 Reverse trajectory IDs 8–14 evaluate IDs 1–7 at negative time. Current
 future-setpoint counts per half-step phase are:
 
 | Motion | Trajectory IDs | Points per phase |
 | --- | --- | ---: |
-| Straight x/y | 1, 2, 8, 9 | 10 |
-| Diagonal | 3, 4, 10, 11 | 8 |
-| Orbit | 5, 6, 12, 13 | 7 or 8 depending on pulling tripod |
-| Self-rotation | 7, 14 | 12 |
+| Straight x/y | 1, 2, 8, 9 | 20 |
+| Diagonal | 3, 4, 10, 11 | 15 |
+| Orbit | 5, 6, 12, 13 | 14 or 15 depending on pulling tripod |
+| Self-rotation | 7, 14 | 24 |
 
 ### Posture configuration
 
@@ -378,13 +385,24 @@ Posture trajectories use a 20 ms cubic smoothstep profile.
 | Pitch/roll maximum acceleration | 40°/s² |
 | Maximum batch | 25 points / 0.5 s |
 | Operating angular-limit scale | 0.9 |
+| Measured-envelope stationary reference | +10 mm objective elevation |
 | IK boundary-search iterations | 52 |
 | Neutral tolerance | `1e-9` |
 
-The measured angular envelope is linearly interpolated between elevation
-knots. The scaled values are the limits actually applied by the coordinator.
+Posture elevation commands are relative to the stationary pose: relative
+`z = 0` always means the stationary joint goal from which posture mode was
+entered. The current safety trials, however, recorded objective elevations
+around a +10 mm stationary objective. Limit checks therefore use
+`objective elevation = relative z + 10 mm`. With the current reference, the
+allowed relative elevation interval is -35 mm through +90 mm. If the
+stationary objective changes, `limit_reference_elevation` must be changed to
+match it so the measured envelope remains meaningful.
 
-| Elevation | Raw roll | Applied roll | Raw pitch | Applied pitch |
+The measured angular envelope is linearly interpolated between objective
+elevation knots. The scaled values are the limits actually applied by the
+coordinator.
+
+| Objective elevation | Raw roll | Applied roll | Raw pitch | Applied pitch |
 | ---: | ---: | ---: | ---: | ---: |
 | -25 mm | 0° | 0° | 0° | 0° |
 | 0 mm | 12° | 10.8° | 12° | 10.8° |
@@ -497,8 +515,8 @@ source /opt/ros/humble/setup.bash
 colcon build --symlink-install --packages-select hexapod_sim
 ```
 
-The tests cover startup readiness, exact executable template sizes, equal leg
-sequence lengths, future-only boundary points, sub-degree sample propagation,
+The tests cover startup/sit-down readiness locking, exact executable template
+sizes, equal leg sequence lengths, future-only boundary points, sub-degree sample propagation,
 normal/auto/posture transitions, counted and aborted gait jobs, midpoint
 direction latching, relative posture composition, pitch/roll exclusion,
 smoothed profile limits, posture interruption boundaries, IK/envelope

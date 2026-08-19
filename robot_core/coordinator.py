@@ -77,6 +77,7 @@ class HexapodCoordinator:
         return self.gait.state not in (
             ControllerState.AWAITING_STARTUP,
             ControllerState.STARTING,
+            ControllerState.SITTING,
         )
 
     def _activate_requested_mode_if_ready(self) -> None:
@@ -135,6 +136,17 @@ class HexapodCoordinator:
             if self.mode != ControllerMode.NORMAL or self.requested_mode != self.mode:
                 return False
             return self.gait.request(command)
+
+        if command.kind == CommandKind.SIT_DOWN:
+            if not self.is_stationary:
+                return False
+            if self.mode == ControllerMode.POSTURE:
+                self.gait.current_joint_goal = list(self.posture.current_joint_goal)
+            accepted = self.gait.request(command)
+            if accepted:
+                self.mode = ControllerMode.NORMAL
+                self.requested_mode = ControllerMode.NORMAL
+            return accepted
 
         if command.kind == CommandKind.STOP:
             if self.mode == ControllerMode.POSTURE:

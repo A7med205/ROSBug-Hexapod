@@ -12,6 +12,7 @@ class KeyboardInputTest(unittest.TestCase):
     def test_startup_skip_and_mode_commands(self):
         self.assertEqual(self.keyboard.feed_key("u").command, Command.startup())
         self.assertEqual(self.keyboard.feed_key("k").command, Command.skip_startup())
+        self.assertEqual(self.keyboard.feed_key("j").command, Command.sit_down())
         self.assertEqual(self.keyboard.feed_key("t").command, Command.toggle_mode())
 
     def test_bare_zero_is_stop(self):

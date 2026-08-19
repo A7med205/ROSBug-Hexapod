@@ -47,22 +47,62 @@ class GaitCoreTest(unittest.TestCase):
         )
         self.assertEqual(self.coordinator.state, ControllerState.STATIONARY)
 
+    def test_default_motion_speeds_are_hardware_canonical(self):
+        cfg = self.coordinator.config
+        self.assertEqual(cfg.linear_speed_x, 0.10)
+        self.assertEqual(cfg.linear_speed_y, 0.10)
+        self.assertEqual(cfg.diagonal_speed, 0.10)
+        self.assertEqual(cfg.self_angular_speed, 0.40)
+        self.assertEqual(cfg.orbit_angular_speed, 0.30)
+
+    def test_sit_down_reverses_startup_descent_and_restores_lock(self):
+        startup_pose, startup_descent = self.stand_up()
+        self.assertTrue(self.coordinator.request(Command.sit_down()))
+
+        sit_down = self.coordinator.next_batch()
+        self.assertEqual(sit_down.phase_name, "sit-down")
+        self.assertEqual(sit_down.point_count, startup_descent.point_count)
+        self.assertEqual(
+            sit_down.points[:-1],
+            tuple(reversed(startup_descent.points[:-1])),
+        )
+        self.assertEqual(sit_down.points[-1], startup_pose.points[-1])
+        self.coordinator.complete_batch(sit_down.goal_id)
+
+        self.assertEqual(self.coordinator.state, ControllerState.AWAITING_STARTUP)
+        self.assertFalse(self.coordinator.request(Command.walk(1)))
+        self.assertFalse(self.coordinator.request(Command.stop()))
+        self.assertFalse(self.coordinator.request(Command.toggle_mode()))
+        self.assertFalse(self.coordinator.request(Command.sit_down()))
+        self.assertTrue(self.coordinator.request(Command.startup()))
+        repeated_pose = self.coordinator.next_batch()
+        self.assertEqual(repeated_pose.points[-1], sit_down.points[-1])
+
+    def test_sit_down_requires_stationary(self):
+        self.assertFalse(self.coordinator.request(Command.sit_down()))
+        self.skip_startup()
+        self.coordinator.request(Command.walk(1))
+        start = self.coordinator.next_batch()
+        self.assertFalse(self.coordinator.request(Command.sit_down()))
+        self.coordinator.complete_batch(start.goal_id)
+        self.assertFalse(self.coordinator.request(Command.sit_down()))
+
     def test_executable_template_point_counts_are_canonical(self):
         expected = {
-            1: ((10, 20), (10, 20)),
-            2: ((10, 20), (10, 20)),
-            3: ((8, 16), (8, 16)),
-            4: ((8, 16), (8, 16)),
-            5: ((8, 16), (7, 14)),
-            6: ((7, 14), (8, 16)),
-            7: ((12, 24), (12, 24)),
-            8: ((10, 20), (10, 20)),
-            9: ((10, 20), (10, 20)),
-            10: ((8, 16), (8, 16)),
-            11: ((8, 16), (8, 16)),
-            12: ((8, 16), (7, 14)),
-            13: ((7, 14), (8, 16)),
-            14: ((12, 24), (12, 24)),
+            1: ((20, 40), (20, 40)),
+            2: ((20, 40), (20, 40)),
+            3: ((15, 30), (15, 30)),
+            4: ((15, 30), (15, 30)),
+            5: ((15, 30), (14, 28)),
+            6: ((14, 28), (15, 30)),
+            7: ((24, 48), (24, 48)),
+            8: ((20, 40), (20, 40)),
+            9: ((20, 40), (20, 40)),
+            10: ((15, 30), (15, 30)),
+            11: ((15, 30), (15, 30)),
+            12: ((15, 30), (14, 28)),
+            13: ((14, 28), (15, 30)),
+            14: ((24, 48), (24, 48)),
         }
         for trajectory_id, (expected_a, expected_b) in expected.items():
             durations = self.coordinator.model.duration_points[trajectory_id]

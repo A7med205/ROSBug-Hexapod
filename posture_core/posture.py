@@ -29,6 +29,9 @@ class PostureConfig:
     angular_velocity: float = math.radians(10.0)
     elevation_acceleration: float = 0.050
     angular_acceleration: float = math.radians(40.0)
+    # The measured envelope used +10 mm as its stationary objective. Runtime
+    # posture z remains relative to whichever stationary pose was confirmed.
+    limit_reference_elevation: float = 0.010
     elevation_knots: Tuple[float, ...] = (-0.025, 0.0, 0.050, 0.080, 0.100)
     roll_limit_knots: Tuple[float, ...] = tuple(
         math.radians(value) for value in (0.0, 12.0, 20.0, 10.0, 0.0)
@@ -113,6 +116,8 @@ class PostureCoordinator:
         )
         if any(not math.isfinite(value) or value <= 0.0 for value in positive):
             raise ValueError("posture timing, velocity, and acceleration must be positive")
+        if not math.isfinite(cfg.limit_reference_elevation):
+            raise ValueError("posture limit reference elevation must be finite")
         if cfg.max_batch_points < 1:
             raise ValueError("max_batch_points must be positive")
         if cfg.ik_boundary_iterations < 1:
@@ -212,6 +217,8 @@ class PostureCoordinator:
         )
 
     def angular_limit_at_elevation(self, axis: str, elevation: float) -> float:
+        """Return the scaled angular limit at an objective elevation."""
+
         cfg = self.config
         if axis == PostureAxis.ROLL:
             limits = cfg.roll_limit_knots
@@ -237,20 +244,32 @@ class PostureCoordinator:
                     break
         return raw_limit * cfg.operating_limit_scale
 
+    def objective_elevation(self, relative_elevation: float) -> float:
+        """Map stationary-relative posture z into the measured limit frame."""
+
+        return self.config.limit_reference_elevation + relative_elevation
+
     def pose_is_allowed(self, pose: BasePose3D) -> bool:
         cfg = self.config
         tolerance = cfg.zero_tolerance
+        objective_elevation = self.objective_elevation(pose.z)
         if not (
             cfg.elevation_knots[0] - tolerance
-            <= pose.z
+            <= objective_elevation
             <= cfg.elevation_knots[-1] + tolerance
         ):
             return False
         if abs(pose.roll) > tolerance and abs(pose.pitch) > tolerance:
             return False
-        if abs(pose.roll) > self.angular_limit_at_elevation(PostureAxis.ROLL, pose.z) + tolerance:
+        if abs(pose.roll) > self.angular_limit_at_elevation(
+            PostureAxis.ROLL,
+            objective_elevation,
+        ) + tolerance:
             return False
-        pitch_limit = self.angular_limit_at_elevation(PostureAxis.PITCH, pose.z)
+        pitch_limit = self.angular_limit_at_elevation(
+            PostureAxis.PITCH,
+            objective_elevation,
+        )
         if abs(pose.pitch) > pitch_limit + tolerance:
             return False
         return self.model.base_pose_is_reachable(pose)
