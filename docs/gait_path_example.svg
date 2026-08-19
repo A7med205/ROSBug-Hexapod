@@ -1,0 +1,106 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="650" viewBox="0 0 920 650" role="img" aria-labelledby="title desc">
+  <title id="title">Example leg-local full pull paths and midpoint direction switches</title>
+  <desc id="desc">Four top-view plots for leg 1 show positive Y translation, clockwise self-rotation, and the two possible midpoint combinations of those trajectories inside a 40 millimeter tip-limit circle.</desc>
+  <defs>
+    <style>
+      .background { fill: #ffffff; }
+      .panel { fill: #f8fafc; stroke: #cbd5e1; stroke-width: 1.5; }
+      .limit { fill: none; stroke: #94a3b8; stroke-width: 1.5; stroke-dasharray: 5 4; vector-effect: non-scaling-stroke; }
+      .axis { stroke: #cbd5e1; stroke-width: 1; vector-effect: non-scaling-stroke; }
+      .linear { fill: none; stroke: #2563eb; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+      .rotate { fill: none; stroke: #ea580c; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+      .home { fill: #0f172a; stroke: #ffffff; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+      .endpoint { fill: #ffffff; stroke-width: 2; vector-effect: non-scaling-stroke; }
+      .linear-end { stroke: #2563eb; }
+      .rotate-end { stroke: #ea580c; }
+      .title { font-family: sans-serif; font-size: 22px; font-weight: 700; fill: #0f172a; }
+      .subtitle { font-family: sans-serif; font-size: 14px; fill: #475569; }
+      .panel-title { font-family: sans-serif; font-size: 16px; font-weight: 700; fill: #0f172a; }
+      .label { font-family: sans-serif; font-size: 13px; fill: #475569; }
+      .legend { font-family: sans-serif; font-size: 13px; fill: #334155; }
+    </style>
+  </defs>
+
+  <rect class="background" width="920" height="650"/>
+  <text class="title" x="30" y="34">Leg 1 local x/y pull geometry</text>
+  <text class="subtitle" x="30" y="57">Top view; paths are generated from the shared gait core. The dashed circle is the 40 mm tip-travel limit around home.</text>
+  <line class="linear" x1="35" y1="76" x2="75" y2="76"/>
+  <text class="legend" x="84" y="81">t1: +Y body translation</text>
+  <line class="rotate" x1="275" y1="76" x2="315" y2="76"/>
+  <text class="legend" x="324" y="81">t7: clockwise body rotation</text>
+  <circle class="home" cx="585" cy="76" r="5"/>
+  <text class="legend" x="596" y="81">neutral tip / switch midpoint</text>
+
+  <g>
+    <rect class="panel" x="30" y="100" width="410" height="235" rx="10"/>
+    <text class="panel-title" x="48" y="128">t1 full pull</text>
+    <text class="label" x="48" y="150">one trajectory: negative edge → home → positive edge</text>
+    <g transform="translate(235 238) scale(1.8 -1.8)">
+      <line class="axis" x1="-48" y1="0" x2="48" y2="0"/>
+      <line class="axis" x1="0" y1="-48" x2="0" y2="48"/>
+      <circle class="limit" cx="0" cy="0" r="40"/>
+      <polyline class="linear" points="28.28,-28.28 25.46,-25.46 22.63,-22.63 19.80,-19.80 16.97,-16.97 14.14,-14.14 11.31,-11.31 8.49,-8.49 5.66,-5.66 2.83,-2.83 0,0 -2.83,2.83 -5.66,5.66 -8.49,8.49 -11.31,11.31 -14.14,14.14 -16.97,16.97 -19.80,19.80 -22.63,22.63 -25.46,25.46 -28.28,28.28"/>
+      <circle class="endpoint linear-end" cx="28.28" cy="-28.28" r="2.5"/>
+      <circle class="endpoint linear-end" cx="-28.28" cy="28.28" r="2.5"/>
+      <circle class="home" cx="0" cy="0" r="3"/>
+    </g>
+    <text class="label" x="318" y="316">+x local →</text>
+    <text class="label" x="245" y="172">↑ +y local</text>
+  </g>
+
+  <g>
+    <rect class="panel" x="480" y="100" width="410" height="235" rx="10"/>
+    <text class="panel-title" x="498" y="128">t7 full pull</text>
+    <text class="label" x="498" y="150">curved stance path produced by base rotation</text>
+    <g transform="translate(685 238) scale(1.8 -1.8)">
+      <line class="axis" x1="-48" y1="0" x2="48" y2="0"/>
+      <line class="axis" x1="0" y1="-48" x2="0" y2="48"/>
+      <circle class="limit" cx="0" cy="0" r="40"/>
+      <polyline class="rotate" points="-8.81,-39.88 -7.79,-36.63 -6.81,-33.36 -5.89,-30.08 -5.02,-26.78 -4.21,-23.47 -3.45,-20.15 -2.74,-16.82 -2.08,-13.47 -1.48,-10.12 -0.93,-6.75 -0.44,-3.38 0,0 0.39,3.39 0.72,6.78 0.99,10.18 1.22,13.58 1.39,16.98 1.50,20.39 1.56,23.80 1.56,27.21 1.51,30.61 1.41,34.02 1.25,37.43 1.04,40.83"/>
+      <circle class="endpoint rotate-end" cx="-8.81" cy="-39.88" r="2.5"/>
+      <circle class="endpoint rotate-end" cx="1.04" cy="40.83" r="2.5"/>
+      <circle class="home" cx="0" cy="0" r="3"/>
+    </g>
+    <text class="label" x="768" y="316">+x local →</text>
+    <text class="label" x="695" y="172">↑ +y local</text>
+  </g>
+
+  <g>
+    <rect class="panel" x="30" y="365" width="410" height="235" rx="10"/>
+    <text class="panel-title" x="48" y="393">Midpoint switch: t1 → t7</text>
+    <text class="label" x="48" y="415">finish t1 half1 at home; start t7 half2 from home</text>
+    <g transform="translate(235 503) scale(1.8 -1.8)">
+      <line class="axis" x1="-48" y1="0" x2="48" y2="0"/>
+      <line class="axis" x1="0" y1="-48" x2="0" y2="48"/>
+      <circle class="limit" cx="0" cy="0" r="40"/>
+      <polyline class="linear" points="28.28,-28.28 25.46,-25.46 22.63,-22.63 19.80,-19.80 16.97,-16.97 14.14,-14.14 11.31,-11.31 8.49,-8.49 5.66,-5.66 2.83,-2.83 0,0"/>
+      <polyline class="rotate" points="0,0 0.39,3.39 0.72,6.78 0.99,10.18 1.22,13.58 1.39,16.98 1.50,20.39 1.56,23.80 1.56,27.21 1.51,30.61 1.41,34.02 1.25,37.43 1.04,40.83"/>
+      <circle class="endpoint linear-end" cx="28.28" cy="-28.28" r="2.5"/>
+      <circle class="endpoint rotate-end" cx="1.04" cy="40.83" r="2.5"/>
+      <circle class="home" cx="0" cy="0" r="3"/>
+    </g>
+    <text class="label" x="318" y="581">+x local →</text>
+    <text class="label" x="245" y="437">↑ +y local</text>
+  </g>
+
+  <g>
+    <rect class="panel" x="480" y="365" width="410" height="235" rx="10"/>
+    <text class="panel-title" x="498" y="393">Midpoint switch: t7 → t1</text>
+    <text class="label" x="498" y="415">finish t7 half1 at home; start t1 half2 from home</text>
+    <g transform="translate(685 503) scale(1.8 -1.8)">
+      <line class="axis" x1="-48" y1="0" x2="48" y2="0"/>
+      <line class="axis" x1="0" y1="-48" x2="0" y2="48"/>
+      <circle class="limit" cx="0" cy="0" r="40"/>
+      <polyline class="rotate" points="-8.81,-39.88 -7.79,-36.63 -6.81,-33.36 -5.89,-30.08 -5.02,-26.78 -4.21,-23.47 -3.45,-20.15 -2.74,-16.82 -2.08,-13.47 -1.48,-10.12 -0.93,-6.75 -0.44,-3.38 0,0"/>
+      <polyline class="linear" points="0,0 -2.83,2.83 -5.66,5.66 -8.49,8.49 -11.31,11.31 -14.14,14.14 -16.97,16.97 -19.80,19.80 -22.63,22.63 -25.46,25.46 -28.28,28.28"/>
+      <circle class="endpoint rotate-end" cx="-8.81" cy="-39.88" r="2.5"/>
+      <circle class="endpoint linear-end" cx="-28.28" cy="28.28" r="2.5"/>
+      <circle class="home" cx="0" cy="0" r="3"/>
+    </g>
+    <text class="label" x="768" y="581">+x local →</text>
+    <text class="label" x="695" y="437">↑ +y local</text>
+  </g>
+
+  <text class="subtitle" x="30" y="626">The limit test is sampled at 20 ms; the final generated point can lie slightly beyond the dashed boundary</text>
+  <text class="subtitle" x="30" y="644">when that sample first reaches the limit.</text>
+</svg>
