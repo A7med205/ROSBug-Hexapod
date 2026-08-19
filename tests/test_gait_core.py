@@ -47,22 +47,22 @@ class GaitCoreTest(unittest.TestCase):
         )
         self.assertEqual(self.coordinator.state, ControllerState.STATIONARY)
 
-    def test_hardware_template_point_counts_are_canonical(self):
+    def test_executable_template_point_counts_are_canonical(self):
         expected = {
-            1: ((11, 21), (11, 21)),
-            2: ((11, 21), (11, 21)),
-            3: ((9, 17), (9, 17)),
-            4: ((9, 17), (9, 17)),
-            5: ((9, 17), (8, 15)),
-            6: ((8, 15), (9, 17)),
-            7: ((13, 25), (13, 25)),
-            8: ((11, 21), (11, 21)),
-            9: ((11, 21), (11, 21)),
-            10: ((9, 17), (9, 17)),
-            11: ((9, 17), (9, 17)),
-            12: ((9, 17), (8, 15)),
-            13: ((8, 15), (9, 17)),
-            14: ((13, 25), (13, 25)),
+            1: ((10, 20), (10, 20)),
+            2: ((10, 20), (10, 20)),
+            3: ((8, 16), (8, 16)),
+            4: ((8, 16), (8, 16)),
+            5: ((8, 16), (7, 14)),
+            6: ((7, 14), (8, 16)),
+            7: ((12, 24), (12, 24)),
+            8: ((10, 20), (10, 20)),
+            9: ((10, 20), (10, 20)),
+            10: ((8, 16), (8, 16)),
+            11: ((8, 16), (8, 16)),
+            12: ((8, 16), (7, 14)),
+            13: ((7, 14), (8, 16)),
+            14: ((12, 24), (12, 24)),
         }
         for trajectory_id, (expected_a, expected_b) in expected.items():
             durations = self.coordinator.model.duration_points[trajectory_id]
@@ -72,6 +72,82 @@ class GaitCoreTest(unittest.TestCase):
             self.assertEqual(
                 (durations["B"]["half"], durations["B"]["full"]), expected_b
             )
+
+    def test_only_future_joint_templates_are_retained(self):
+        model = self.coordinator.model
+        self.assertFalse(hasattr(model, "tip_paths"))
+        self.assertFalse(hasattr(model, "tip_swings"))
+        self.assertEqual(model.PATH_TYPES, ("half1", "half2"))
+        for trajectory_id in model.MOVING_TRAJECTORY_IDS:
+            for leg in model.legs:
+                self.assertNotIn("full", model.joint_paths[trajectory_id][leg.leg_id])
+
+    def test_all_phase_sequences_are_strictly_synchronized(self):
+        model = self.coordinator.model
+        phases = (
+            ("half2", "half1"),
+            ("half1", "half2"),
+            ("half1", "full2"),
+            ("half2", "full1"),
+        )
+        for trajectory_id in model.MOVING_TRAJECTORY_IDS:
+            for pull_tripod in model.TRIPODS:
+                for pull_type, swing_type in phases:
+                    sequences = model.collect_phase_sequences(
+                        trajectory_id,
+                        pull_tripod,
+                        pull_type,
+                        swing_type,
+                    )
+                    self.assertEqual(
+                        len({len(sequence) for sequence in sequences.values()}),
+                        1,
+                    )
+
+    def test_subdegree_joint_changes_are_not_gated(self):
+        self.skip_startup()
+        self.coordinator.request(Command.walk(1))
+        batch = self.coordinator.next_batch()
+        sequences = self.coordinator.model.collect_phase_sequences(
+            1,
+            "A",
+            "half2",
+            "half1",
+        )
+        expected = tuple(
+            tuple(
+                angle
+                for leg in self.coordinator.model.legs
+                for angle in sequences[leg.leg_id][point_index]
+            )
+            for point_index in range(len(next(iter(sequences.values()))))
+        )
+        self.assertEqual(batch.points, expected)
+        self.assertTrue(
+            any(
+                0.0 < abs(following - previous) < math.radians(1.0)
+                for previous_point, following_point in zip(
+                    batch.points,
+                    batch.points[1:],
+                )
+                for previous, following in zip(previous_point, following_point)
+            )
+        )
+
+    def test_batches_do_not_repeat_the_confirmed_boundary_point(self):
+        self.skip_startup()
+        self.coordinator.request(Command.walk(1))
+
+        for _ in range(3):
+            confirmed = tuple(self.coordinator.current_joint_goal)
+            batch = self.coordinator.next_batch()
+            self.assertNotEqual(batch.points[0], confirmed)
+            self.coordinator.complete_batch(batch.goal_id)
+
+        self.coordinator.request(Command.stop())
+        confirmed = tuple(self.coordinator.current_joint_goal)
+        final_half = self.coordinator.next_batch()
+        self.assertNotEqual(final_half.points[0], confirmed)
 
     def test_skip_startup_asserts_neutral_without_creating_a_batch(self):
         self.skip_startup()

@@ -11,8 +11,8 @@ posture generator, and mode coordinator.
 - `robot_core/motion_batch.py`: transport-neutral joint batches and shared goal
   IDs.
 - `robot_core/coordinator.py`: startup and normal/auto/posture mode arbitration.
-- `gait_core/lite_gait.py`: body-frame stance displacement, hardware-tuned gait
-  templates, joint gating, and gait state-machine primitives.
+- `gait_core/lite_gait.py`: body-frame stance displacement, hardware-derived
+  gait templates, and gait state-machine primitives.
 - `posture_core/posture.py`: relative elevation, pitch, and roll planning,
   smoothed profiles, global IK-boundary clamping, and posture state.
 - `common/keyboard_input.py`: common direct keyboard mapping.
@@ -24,8 +24,11 @@ posture generator, and mode coordinator.
   `FollowJointTrajectory` adapter.
 
 Both adapters receive the same `JointBatch` values from the core. Gait batches
-end at half-step boundaries. Posture profiles use 25-point (0.5-second)
-boundaries so an active motion can be interrupted without returning neutral.
+end at half-step boundaries. Gait templates contain only future setpoints, so
+the confirmed point at a phase boundary is not transmitted again. Cartesian
+construction data is discarded after conversion to synchronized joint-space
+templates. Posture profiles use 25-point (0.5-second) boundaries so an active
+motion can be interrupted without returning neutral.
 
 ## Keyboard controls
 
@@ -117,6 +120,11 @@ The firmware accepts one batch at a time. It validates protocol version, goal
 identity, shape, sample period, finite joint values, payload size, and CRC
 before acknowledging it. It applies each point at an absolute board-clock
 deadline and does not interpolate between points.
+
+The shared core does not suppress small joint changes. It sends every ideal
+joint sample needed by the trajectory timing; the calibrated angle-to-pulse
+conversion on the Servo 2040 naturally applies the hardware's actual
+resolution.
 
 Run the host adapter from the repository root:
 

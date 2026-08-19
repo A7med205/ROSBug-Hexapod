@@ -1,9 +1,9 @@
 """Shared lite tripod gait implementation.
 
-This module owns gait geometry, template generation, joint gating, and the
-latest-command state machine.  It intentionally contains no terminal, serial,
-ROS, or wall-clock code.  Both output adapters consume the same ``JointBatch``
-objects produced here.
+This module owns gait geometry, template generation, and the latest-command
+state machine.  It intentionally contains no terminal, serial, ROS, or
+wall-clock code.  Both output adapters consume the same ``JointBatch`` objects
+produced here.
 """
 
 from __future__ import annotations
@@ -55,7 +55,6 @@ class GaitConfig(RobotConfig):
     limit_radius: float = 0.04
     swing_height: float = 0.025
     sample_period: float = 0.02
-    min_angle_deg: float = 1.0
     startup_z: float = 0.01
     startup_velocity: float = 0.05
     startup_hold: float = 2.0
@@ -81,6 +80,10 @@ class LocalDisplacement2D:
     dy_local: float
 
 
+TipTemplateStore = Dict[int, Dict[int, Dict[str, List[Point3D]]]]
+DurationStore = Dict[int, Dict[str, Dict[str, int]]]
+
+
 @dataclass
 class _PendingBatch:
     batch: JointBatch
@@ -91,32 +94,38 @@ class _PendingBatch:
 
 
 class LiteGaitModel(HexapodModel):
-    PATH_TYPES = ("half1", "half2", "full")
+    PATH_TYPES = ("half1", "half2")
     SWING_TYPES = ("half1", "half2", "full1", "full2")
     MOVING_TRAJECTORY_IDS = tuple(range(1, 15))
     TRIPODS = ("A", "B")
 
     def __init__(self, config: GaitConfig) -> None:
         super().__init__(config)
-        self._reset_template_stores()
-        self._build_all_templates()
-        self._convert_templates_to_joint_space()
+        ids = self.MOVING_TRAJECTORY_IDS
+        tip_paths = {traj: self._new_leg_store(self.PATH_TYPES) for traj in ids}
+        tip_swings = {traj: self._new_leg_store(self.SWING_TYPES) for traj in ids}
+        geometry_durations = {
+            traj: {tripod: {"half": 0, "full": 0} for tripod in self.TRIPODS}
+            for traj in ids
+        }
+        self.joint_paths = {
+            traj: self._new_leg_store(self.PATH_TYPES) for traj in ids
+        }
+        self.joint_swings = {
+            traj: self._new_leg_store(self.SWING_TYPES) for traj in ids
+        }
+        self.duration_points = {
+            traj: {tripod: {"half": 0, "full": 0} for tripod in self.TRIPODS}
+            for traj in ids
+        }
+
+        self._build_all_templates(tip_paths, tip_swings, geometry_durations)
+        self._convert_templates_to_joint_space(tip_paths, tip_swings)
 
     def _new_leg_store(self, type_names: Tuple[str, ...]):
         return {
             leg.leg_id: {type_name: [] for type_name in type_names}
             for leg in self.legs
-        }
-
-    def _reset_template_stores(self) -> None:
-        ids = self.MOVING_TRAJECTORY_IDS
-        self.tip_paths = {traj: self._new_leg_store(self.PATH_TYPES) for traj in ids}
-        self.tip_swings = {traj: self._new_leg_store(self.SWING_TYPES) for traj in ids}
-        self.joint_paths = {traj: self._new_leg_store(self.PATH_TYPES) for traj in ids}
-        self.joint_swings = {traj: self._new_leg_store(self.SWING_TYPES) for traj in ids}
-        self.duration_points = {
-            traj: {tripod: {"half": 0, "full": 0} for tripod in self.TRIPODS}
-            for traj in ids
         }
 
     def base_delta_to_tip_delta(
@@ -304,7 +313,12 @@ class LiteGaitModel(HexapodModel):
             )
         return output
 
-    def _build_tripod_templates(self, trajectory_id: int, tripod: str) -> None:
+    def _build_tripod_templates(
+        self,
+        trajectory_id: int,
+        tripod: str,
+        tip_paths: TipTemplateStore,
+    ) -> None:
         positive = self._pull_builder(tripod, trajectory_id, 1)
         negative = self._pull_builder(tripod, trajectory_id, -1)
         cfg = self.config
@@ -314,19 +328,25 @@ class LiteGaitModel(HexapodModel):
             negative_path = negative.get(leg.leg_id, fallback)
             half1 = list(reversed(negative_path))
             half2 = positive_path
-            self.tip_paths[trajectory_id][leg.leg_id]["half1"] = half1
-            self.tip_paths[trajectory_id][leg.leg_id]["half2"] = half2
-            self.tip_paths[trajectory_id][leg.leg_id]["full"] = half1 + half2[1:]
+            tip_paths[trajectory_id][leg.leg_id]["half1"] = half1
+            tip_paths[trajectory_id][leg.leg_id]["half2"] = half2
 
-    def _set_duration_points(self, trajectory_id: int, tripod: str) -> None:
+    def _set_duration_points(
+        self,
+        trajectory_id: int,
+        tripod: str,
+        tip_paths: TipTemplateStore,
+        geometry_durations: DurationStore,
+    ) -> None:
         legs = self.tripod_legs(tripod)
         first_leg_id = legs[0].leg_id
-        self.duration_points[trajectory_id][tripod]["half"] = max(
-            len(self.tip_paths[trajectory_id][first_leg_id]["half1"]), 2
-        )
-        self.duration_points[trajectory_id][tripod]["full"] = max(
-            len(self.tip_paths[trajectory_id][first_leg_id]["full"]), 2
-        )
+        paths = tip_paths[trajectory_id][first_leg_id]
+        half_points = max(len(paths["half1"]), 2)
+        full_points = max(len(paths["half1"]) + len(paths["half2"]) - 1, 2)
+        geometry_durations[trajectory_id][tripod]["half"] = half_points
+        geometry_durations[trajectory_id][tripod]["full"] = full_points
+        self.duration_points[trajectory_id][tripod]["half"] = half_points - 1
+        self.duration_points[trajectory_id][tripod]["full"] = full_points - 1
 
     @staticmethod
     def _split_swing(
@@ -335,43 +355,74 @@ class LiteGaitModel(HexapodModel):
         split_index = max(1, min(split_index, len(swing) - 1))
         return swing[:split_index], swing[split_index:]
 
-    def _build_tripod_swings(self, trajectory_id: int, tripod: str) -> None:
+    def _build_tripod_swings(
+        self,
+        trajectory_id: int,
+        tripod: str,
+        tip_paths: TipTemplateStore,
+        tip_swings: TipTemplateStore,
+        geometry_durations: DurationStore,
+    ) -> None:
         other = self.opposite_tripod(tripod)
-        half_points = self.duration_points[trajectory_id][other]["half"]
-        full_points = self.duration_points[trajectory_id][other]["full"]
+        half_points = geometry_durations[trajectory_id][other]["half"]
+        full_points = geometry_durations[trajectory_id][other]["full"]
         for leg in self.tripod_legs(tripod):
             leg_id = leg.leg_id
-            paths = self.tip_paths[trajectory_id][leg_id]
-            swings = self.tip_swings[trajectory_id][leg_id]
+            paths = tip_paths[trajectory_id][leg_id]
+            swings = tip_swings[trajectory_id][leg_id]
             swings["half1"] = self._swing_builder(paths["half1"], half_points)
             swings["half2"] = self._swing_builder(paths["half2"], half_points)
-            full_swing = self._swing_builder(paths["full"], full_points)
+            full_path = paths["half1"] + paths["half2"][1:]
+            full_swing = self._swing_builder(full_path, full_points)
             swings["full2"], swings["full1"] = self._split_swing(
                 full_swing, half_points
             )
 
-    def _build_all_templates(self) -> None:
+    def _build_all_templates(
+        self,
+        tip_paths: TipTemplateStore,
+        tip_swings: TipTemplateStore,
+        geometry_durations: DurationStore,
+    ) -> None:
         for trajectory_id in self.MOVING_TRAJECTORY_IDS:
             for tripod in self.TRIPODS:
-                self._build_tripod_templates(trajectory_id, tripod)
+                self._build_tripod_templates(trajectory_id, tripod, tip_paths)
             for tripod in self.TRIPODS:
-                self._set_duration_points(trajectory_id, tripod)
+                self._set_duration_points(
+                    trajectory_id,
+                    tripod,
+                    tip_paths,
+                    geometry_durations,
+                )
             for tripod in self.TRIPODS:
-                self._build_tripod_swings(trajectory_id, tripod)
+                self._build_tripod_swings(
+                    trajectory_id,
+                    tripod,
+                    tip_paths,
+                    tip_swings,
+                    geometry_durations,
+                )
 
-    def _convert_templates_to_joint_space(self) -> None:
+    def _convert_templates_to_joint_space(
+        self,
+        tip_paths: TipTemplateStore,
+        tip_swings: TipTemplateStore,
+    ) -> None:
         for trajectory_id in self.MOVING_TRAJECTORY_IDS:
             for leg in self.legs:
                 leg_id = leg.leg_id
                 for path_type in self.PATH_TYPES:
                     self.joint_paths[trajectory_id][leg_id][path_type] = [
                         self.inverse_kinematics(point)
-                        for point in self.tip_paths[trajectory_id][leg_id][path_type]
+                        for point in tip_paths[trajectory_id][leg_id][path_type][1:]
                     ]
                 for swing_type in self.SWING_TYPES:
+                    samples = tip_swings[trajectory_id][leg_id][swing_type]
+                    if swing_type != "full1":
+                        samples = samples[1:]
                     self.joint_swings[trajectory_id][leg_id][swing_type] = [
                         self.inverse_kinematics(point)
-                        for point in self.tip_swings[trajectory_id][leg_id][swing_type]
+                        for point in samples
                     ]
 
     def collect_phase_sequences(
@@ -569,30 +620,25 @@ class LiteGaitCoordinator:
             trajectory_id=trajectory_id,
         )
 
-    def _gate_sequences(
+    def _compose_sequences(
         self, sequences: Dict[int, List[JointAngles]]
     ) -> Tuple[List[List[float]], List[float]]:
-        if not sequences or any(not sequence for sequence in sequences.values()):
+        leg_ids = {leg.leg_id for leg in self.model.legs}
+        if set(sequences) != leg_ids or any(
+            not sequence for sequence in sequences.values()
+        ):
             raise ValueError("all six legs require a non-empty sequence")
-        point_count = max(len(sequence) for sequence in sequences.values())
-        threshold = math.radians(self.config.min_angle_deg)
-        next_goal = list(self.current_joint_goal)
+        point_counts = {len(sequence) for sequence in sequences.values()}
+        if len(point_counts) != 1:
+            raise ValueError("all six leg sequences must have the same point count")
+        point_count = point_counts.pop()
         output: List[List[float]] = []
         for point_index in range(point_count):
             desired: List[float] = []
             for leg in self.model.legs:
-                sequence = sequences[leg.leg_id]
-                desired.extend(
-                    sequence[point_index]
-                    if point_index < len(sequence)
-                    else sequence[-1]
-                )
-            for joint_index, angle in enumerate(desired):
-                current = next_goal[joint_index]
-                if not math.isfinite(current) or abs(angle - current) >= threshold:
-                    next_goal[joint_index] = angle
-            output.append(list(next_goal))
-        return output, next_goal
+                desired.extend(sequences[leg.leg_id][point_index])
+            output.append(desired)
+        return output, list(output[-1])
 
     def _prepare_gait_batch(
         self,
@@ -609,7 +655,7 @@ class LiteGaitCoordinator:
             pull_path_type,
             swing_type,
         )
-        points, end_goal = self._gate_sequences(sequences)
+        points, end_goal = self._compose_sequences(sequences)
         batch = self._make_batch(phase_name, points, trajectory_id)
         self._pending = _PendingBatch(
             batch=batch,
@@ -641,8 +687,6 @@ class LiteGaitCoordinator:
         delta = cfg.home_z - cfg.startup_z
         step_distance = cfg.startup_velocity * cfg.sample_period
         step_count = max(1, math.ceil(abs(delta) / step_distance))
-        threshold = math.radians(cfg.min_angle_deg)
-        next_goal = list(self.current_joint_goal)
         points: List[List[float]] = []
         for step_index in range(1, step_count + 1):
             progress = step_index / step_count
@@ -652,14 +696,9 @@ class LiteGaitCoordinator:
                 cfg.startup_z + progress * delta,
             )
             desired = list(self.model.inverse_kinematics(tip)) * len(self.model.legs)
-            for joint_index, angle in enumerate(desired):
-                current = next_goal[joint_index]
-                if not math.isfinite(current) or abs(angle - current) >= threshold:
-                    next_goal[joint_index] = angle
-            points.append(list(next_goal))
+            points.append(desired)
 
-        # Threshold gating must not leave the physical or simulated robot short
-        # of the canonical standing pose.
+        # Preserve the exact canonical endpoint against floating-point drift.
         home_goal = self.model.neutral_joint_goal()
         points[-1] = list(home_goal)
         batch = self._make_batch("startup descent", points)
