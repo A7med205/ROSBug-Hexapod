@@ -12,18 +12,17 @@ import math
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
-
-class CommandKind:
-    STARTUP = "startup"
-    SKIP_STARTUP = "skip_startup"
-    STOP = "stop"
-    TOGGLE_MODE = "toggle_mode"
-    WALK = "walk"
-
-
-class ControllerMode:
-    NORMAL = "normal"
-    AUTO = "auto"
+from robot_core import (
+    Command,
+    CommandKind,
+    ControllerMode,
+    GoalIdAllocator,
+    HexapodModel,
+    JointAngles,
+    JointBatch,
+    Point3D,
+    RobotConfig,
+)
 
 
 class ControllerState:
@@ -31,33 +30,6 @@ class ControllerState:
     STARTING = "starting"
     STATIONARY = "stationary"
     WALKING = "walking"
-
-
-@dataclass(frozen=True)
-class Command:
-    kind: str
-    trajectory_id: int = 0
-    steps: Optional[int] = None
-
-    @classmethod
-    def startup(cls) -> "Command":
-        return cls(CommandKind.STARTUP)
-
-    @classmethod
-    def skip_startup(cls) -> "Command":
-        return cls(CommandKind.SKIP_STARTUP)
-
-    @classmethod
-    def stop(cls) -> "Command":
-        return cls(CommandKind.STOP)
-
-    @classmethod
-    def toggle_mode(cls) -> "Command":
-        return cls(CommandKind.TOGGLE_MODE)
-
-    @classmethod
-    def walk(cls, trajectory_id: int, steps: Optional[int] = None) -> "Command":
-        return cls(CommandKind.WALK, trajectory_id, steps)
 
 
 class AutoJobStatus:
@@ -78,7 +50,7 @@ class AutoJob:
 
 
 @dataclass(frozen=True)
-class GaitConfig:
+class GaitConfig(RobotConfig):
     # Canonical values are the physical-hardware values.
     limit_radius: float = 0.04
     swing_height: float = 0.025
@@ -88,34 +60,12 @@ class GaitConfig:
     startup_velocity: float = 0.05
     startup_hold: float = 2.0
 
-    l1: float = 0.0385
-    l2: float = 0.0700
-    l3: float = 0.1020
-
-    home_x: float = 0.110
-    home_y: float = 0.000
-    home_z: float = -0.050
-
     linear_speed_y: float = 0.20
     linear_speed_x: float = 0.20
     diagonal_speed: float = 0.20
     self_angular_speed: float = 0.80
     orbit_angular_speed: float = 0.60
     external_radius: float = 0.30
-
-
-@dataclass(frozen=True)
-class FramePose:
-    x: float
-    y: float
-    theta_deg: float
-
-
-@dataclass(frozen=True)
-class LegInfo:
-    leg_id: int
-    frame_pose: FramePose
-    tripod: str
 
 
 @dataclass(frozen=True)
@@ -131,31 +81,6 @@ class LocalDisplacement2D:
     dy_local: float
 
 
-@dataclass(frozen=True)
-class Point3D:
-    x: float
-    y: float
-    z: float
-
-
-JointAngles = Tuple[float, float, float]
-JointPoint = Tuple[float, ...]
-
-
-@dataclass(frozen=True)
-class JointBatch:
-    goal_id: int
-    phase_name: str
-    points: Tuple[JointPoint, ...]
-    sample_period: float
-    hold_after: float = 0.0
-    trajectory_id: int = 0
-
-    @property
-    def point_count(self) -> int:
-        return len(self.points)
-
-
 @dataclass
 class _PendingBatch:
     batch: JointBatch
@@ -165,22 +90,14 @@ class _PendingBatch:
     pull_tripod: str = ""
 
 
-class LiteGaitModel:
+class LiteGaitModel(HexapodModel):
     PATH_TYPES = ("half1", "half2", "full")
     SWING_TYPES = ("half1", "half2", "full1", "full2")
     MOVING_TRAJECTORY_IDS = tuple(range(1, 15))
     TRIPODS = ("A", "B")
 
     def __init__(self, config: GaitConfig) -> None:
-        self.config = config
-        self.legs: Tuple[LegInfo, ...] = (
-            LegInfo(1, FramePose(-0.0535, 0.0900, 135.0), "A"),
-            LegInfo(2, FramePose(-0.0700, 0.0000, 180.0), "B"),
-            LegInfo(3, FramePose(-0.0535, -0.0900, -135.0), "A"),
-            LegInfo(4, FramePose(0.0535, 0.0900, 45.0), "B"),
-            LegInfo(5, FramePose(0.0700, 0.0000, 0.0), "A"),
-            LegInfo(6, FramePose(0.0535, -0.0900, -45.0), "B"),
-        )
+        super().__init__(config)
         self._reset_template_stores()
         self._build_all_templates()
         self._convert_templates_to_joint_space()
@@ -201,45 +118,6 @@ class LiteGaitModel:
             traj: {tripod: {"half": 0, "full": 0} for tripod in self.TRIPODS}
             for traj in ids
         }
-
-    @staticmethod
-    def _clamp(value: float, minimum: float, maximum: float) -> float:
-        return max(minimum, min(maximum, value))
-
-    @staticmethod
-    def opposite_tripod(tripod: str) -> str:
-        return "B" if tripod == "A" else "A"
-
-    def tripod_legs(self, tripod: str) -> List[LegInfo]:
-        return [leg for leg in self.legs if leg.tripod == tripod]
-
-    def inverse_kinematics(self, tip: Point3D) -> JointAngles:
-        cfg = self.config
-        j1 = -math.atan2(tip.y, tip.x)
-        x_prime = math.hypot(tip.x, tip.y) - cfg.l1
-        distance = math.hypot(x_prime, tip.z)
-        distance = self._clamp(distance, abs(cfg.l2 - cfg.l3), cfg.l2 + cfg.l3)
-
-        alpha1 = math.atan2(-tip.z, x_prime)
-        cos_alpha2 = self._clamp(
-            (cfg.l2 * cfg.l2 + distance * distance - cfg.l3 * cfg.l3)
-            / (2.0 * cfg.l2 * distance),
-            -1.0,
-            1.0,
-        )
-        alpha2 = math.acos(cos_alpha2)
-        cos_knee = self._clamp(
-            (cfg.l2 * cfg.l2 + cfg.l3 * cfg.l3 - distance * distance)
-            / (2.0 * cfg.l2 * cfg.l3),
-            -1.0,
-            1.0,
-        )
-        return j1, alpha1 - alpha2, math.pi - math.acos(cos_knee)
-
-    def neutral_joint_goal(self) -> List[float]:
-        cfg = self.config
-        angles = self.inverse_kinematics(Point3D(cfg.home_x, cfg.home_y, cfg.home_z))
-        return list(angles) * len(self.legs)
 
     def base_delta_to_tip_delta(
         self,
@@ -519,7 +397,11 @@ class LiteGaitModel:
 class LiteGaitCoordinator:
     """Shared mode, readiness, and half-step gait coordinator."""
 
-    def __init__(self, config: Optional[GaitConfig] = None) -> None:
+    def __init__(
+        self,
+        config: Optional[GaitConfig] = None,
+        goal_id_allocator: Optional[GoalIdAllocator] = None,
+    ) -> None:
         self.config = config or GaitConfig()
         self.model = LiteGaitModel(self.config)
         self.state = ControllerState.AWAITING_STARTUP
@@ -531,7 +413,7 @@ class LiteGaitCoordinator:
         self.next_full_pull_tripod = "B"
         self._walk_half = "first"
         self._startup_stage = ""
-        self._next_goal_id = 1
+        self._goal_ids = goal_id_allocator or GoalIdAllocator()
         self._pending: Optional[_PendingBatch] = None
         self.current_joint_goal = self.model.neutral_joint_goal()
 
@@ -555,17 +437,14 @@ class LiteGaitCoordinator:
         self.auto_job = None
         self.mode = self.requested_mode
 
-    @staticmethod
-    def _opposite_mode(mode: str) -> str:
-        return ControllerMode.AUTO if mode == ControllerMode.NORMAL else ControllerMode.NORMAL
-
-    def _request_mode_toggle(self) -> bool:
+    def _request_mode(self, target_mode: str) -> bool:
+        if target_mode not in (ControllerMode.NORMAL, ControllerMode.AUTO):
+            return False
         if self.state in (ControllerState.AWAITING_STARTUP, ControllerState.STARTING):
             return False
 
         motion_in_progress = self.state == ControllerState.WALKING or self._pending is not None
-        base_mode = self.requested_mode if motion_in_progress else self.mode
-        self.requested_mode = self._opposite_mode(base_mode)
+        self.requested_mode = target_mode
         if self.state == ControllerState.STATIONARY and self._pending is None:
             # A mode change at rest cancels any requested-but-not-started
             # movement or auto job; nothing is deferred into the new mode.
@@ -580,6 +459,19 @@ class LiteGaitCoordinator:
         if self.auto_job is not None:
             self.auto_job.status = AutoJobStatus.ABORTING
         return True
+
+    def _request_mode_toggle(self) -> bool:
+        base_mode = (
+            self.requested_mode
+            if self.state == ControllerState.WALKING or self._pending is not None
+            else self.mode
+        )
+        target_mode = (
+            ControllerMode.AUTO
+            if base_mode == ControllerMode.NORMAL
+            else ControllerMode.NORMAL
+        )
+        return self._request_mode(target_mode)
 
     def request(self, command: Command) -> bool:
         if command.kind == CommandKind.STARTUP:
@@ -604,6 +496,9 @@ class LiteGaitCoordinator:
 
         if command.kind == CommandKind.TOGGLE_MODE:
             return self._request_mode_toggle()
+
+        if command.kind == CommandKind.SET_MODE:
+            return command.mode is not None and self._request_mode(command.mode)
 
         if command.kind == CommandKind.STOP:
             self.requested_trajectory_id = 0
@@ -651,9 +546,7 @@ class LiteGaitCoordinator:
         return True
 
     def _allocate_goal_id(self) -> int:
-        goal_id = self._next_goal_id
-        self._next_goal_id += 1
-        return goal_id
+        return self._goal_ids.allocate()
 
     def _make_batch(
         self,

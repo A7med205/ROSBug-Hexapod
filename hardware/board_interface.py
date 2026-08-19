@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import secrets
 import sys
 import time
@@ -11,13 +12,15 @@ from pathlib import Path
 from typing import Callable
 
 try:
-    from gait_core import CommandKind, JointBatch, LiteGaitCoordinator
     from common.keyboard_input import KeyboardInput, help_text
+    from robot_core import CommandKind, ControllerMode, JointBatch, PostureAxis
+    from robot_core.coordinator import HexapodCoordinator
 except ImportError:
     # Support direct execution as well as ``python -m hardware.board_interface``.
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from gait_core import CommandKind, JointBatch, LiteGaitCoordinator
     from common.keyboard_input import KeyboardInput, help_text
+    from robot_core import CommandKind, ControllerMode, JointBatch, PostureAxis
+    from robot_core.coordinator import HexapodCoordinator
 
 import serial
 
@@ -130,8 +133,30 @@ def _describe_command(command) -> str:
             return f"trajectory {command.trajectory_id} for {command.steps} steps"
         return f"trajectory {command.trajectory_id} continuously"
     if command.kind == CommandKind.TOGGLE_MODE:
-        return "toggle normal/auto mode"
+        return "cycle normal/auto/posture mode"
+    if command.kind == CommandKind.POSTURE:
+        if command.posture_axis == PostureAxis.ELEVATION:
+            return f"elevation {command.posture_delta * 1000.0:+.1f} mm"
+        return (
+            f"{command.posture_axis} "
+            f"{math.degrees(command.posture_delta):+.1f} deg"
+        )
     return command.kind
+
+
+def _posture_result_notice(coordinator: HexapodCoordinator) -> str:
+    result = coordinator.last_posture_result
+    if result is None or not result.was_clamped:
+        return ""
+    if result.axis == PostureAxis.ELEVATION:
+        requested = result.requested_delta * 1000.0
+        applied = result.applied_delta * 1000.0
+        unit = "mm"
+    else:
+        requested = math.degrees(result.requested_delta)
+        applied = math.degrees(result.applied_delta)
+        unit = "deg"
+    return f"IK limit: requested {requested:+.3f} {unit}, applying {applied:+.3f} {unit}"
 
 
 def parse_args():
@@ -147,7 +172,7 @@ def parse_args():
 def main() -> None:
     args = parse_args()
     print("Building shared gait templates...")
-    coordinator = LiteGaitCoordinator()
+    coordinator = HexapodCoordinator()
     executor = BoardBatchExecutor(args.port, args.baudrate, args.response_timeout)
     quit_requested = False
     exit_code = 0
@@ -170,6 +195,10 @@ def main() -> None:
                             f"mode: {coordinator.mode}; "
                             f"requested mode: {coordinator.requested_mode}"
                         )
+                    if accepted and result.command.kind == CommandKind.POSTURE:
+                        notice = _posture_result_notice(coordinator)
+                        if notice:
+                            print(notice)
                 quit_requested = quit_requested or result.quit_requested
 
             while not quit_requested:
@@ -189,6 +218,14 @@ def main() -> None:
                     break
                 if coordinator.is_stationary:
                     print(f"stationary; mode: {coordinator.mode}")
+                elif coordinator.mode == ControllerMode.POSTURE and coordinator.is_idle:
+                    pose = coordinator.posture.current_pose
+                    print(
+                        "posture hold: "
+                        f"z={pose.z * 1000.0:+.2f} mm, "
+                        f"pitch={math.degrees(pose.pitch):+.2f} deg, "
+                        f"roll={math.degrees(pose.roll):+.2f} deg"
+                    )
     except KeyboardInterrupt:
         exit_code = 130
     finally:

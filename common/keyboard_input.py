@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import select
 import sys
 import termios
@@ -9,13 +10,21 @@ import tty
 from dataclasses import dataclass
 from typing import List, Optional
 
-from gait_core import Command
+from robot_core import Command, PostureAxis
 
 
 LINE_KEYS = {"w": 1, "d": 2, "s": 8, "a": 9}
 DIAGONAL_KEYS = {"q": 4, "e": 3, "z": 10, "c": 11}
 ORBIT_KEYS = {"q": 6, "e": 12, "z": 13, "c": 5}
 ROTATION_KEYS = {"o": 14, "p": 7}
+POSTURE_KEYS = {
+    "[": (PostureAxis.ELEVATION, -0.001),
+    "]": (PostureAxis.ELEVATION, 0.001),
+    ",": (PostureAxis.PITCH, -math.pi / 180.0),
+    ".": (PostureAxis.PITCH, math.pi / 180.0),
+    ";": (PostureAxis.ROLL, -math.pi / 180.0),
+    "'": (PostureAxis.ROLL, math.pi / 180.0),
+}
 
 
 @dataclass(frozen=True)
@@ -28,7 +37,7 @@ class KeyboardPoll:
 class KeyboardInput:
     def __init__(self) -> None:
         self.mode = "diagonal"
-        self.step_prefix = ""
+        self.numeric_prefix = ""
         self._old_settings = None
 
     def __enter__(self) -> "KeyboardInput":
@@ -58,40 +67,54 @@ class KeyboardInput:
         if key == "x":
             return KeyboardPoll(None, True, notices)
         if key in ("\x08", "\x7f"):
-            self.step_prefix = self.step_prefix[:-1]
-            notices.append(f"step count: {self.step_prefix or '(empty)'}")
+            self.numeric_prefix = self.numeric_prefix[:-1]
+            notices.append(f"numeric value: {self.numeric_prefix or '(empty)'}")
             return KeyboardPoll(None, False, notices)
         if key == "\x1b":
-            self.step_prefix = ""
-            notices.append("step count cleared")
+            self.numeric_prefix = ""
+            notices.append("numeric value cleared")
             return KeyboardPoll(None, False, notices)
         if key.isdigit():
-            if key == "0" and not self.step_prefix:
+            if key == "0" and not self.numeric_prefix:
                 return KeyboardPoll(Command.stop(), False, notices)
-            self.step_prefix += key
-            notices.append(f"step count: {self.step_prefix}")
+            self.numeric_prefix += key
+            notices.append(f"numeric value: {self.numeric_prefix}")
             return KeyboardPoll(None, False, notices)
 
         if key == "m":
-            self.step_prefix = ""
+            self.numeric_prefix = ""
             self.mode = "orbit" if self.mode == "diagonal" else "diagonal"
             notices.append(f"q/e/z/c mode: {self.mode}")
             return KeyboardPoll(None, False, notices)
         if key == "t":
-            self.step_prefix = ""
+            self.numeric_prefix = ""
             return KeyboardPoll(Command.toggle_mode(), False, notices)
         if key == "u":
-            self.step_prefix = ""
+            self.numeric_prefix = ""
             return KeyboardPoll(Command.startup(), False, notices)
         if key == "k":
-            self.step_prefix = ""
+            self.numeric_prefix = ""
             return KeyboardPoll(Command.skip_startup(), False, notices)
+
+        posture_mapping = POSTURE_KEYS.get(key)
+        if posture_mapping is not None:
+            if not self.numeric_prefix:
+                notices.append("posture command requires a numeric value")
+                return KeyboardPoll(None, False, notices)
+            axis, unit_scale = posture_mapping
+            value = int(self.numeric_prefix)
+            self.numeric_prefix = ""
+            return KeyboardPoll(
+                Command.posture(axis, value * unit_scale),
+                False,
+                notices,
+            )
 
         trajectory_id = self._movement_trajectory(key)
         if trajectory_id is None:
             return KeyboardPoll(None, False, notices)
-        steps = int(self.step_prefix) if self.step_prefix else None
-        self.step_prefix = ""
+        steps = int(self.numeric_prefix) if self.numeric_prefix else None
+        self.numeric_prefix = ""
         return KeyboardPoll(Command.walk(trajectory_id, steps), False, notices)
 
     def poll(self, timeout: float = 0.0) -> KeyboardPoll:
@@ -123,8 +146,10 @@ def help_text(controller_name: str) -> str:
             "Startup/stand: u",
             "Skip startup (assert already standing): k",
             "Graceful stop: 0",
-            "Toggle normal/auto mode: t",
+            "Cycle normal/auto/posture mode: t",
             "Auto counted motion: type count then movement (for example 5w)",
+            "Posture elevation: [(-mm), ](+mm), for example 10]",
+            "Posture pitch: ,(-deg), .(+deg); roll: ;(-deg), '(+deg)",
             "Lines: w(+Y), d(+X), s(-Y), a(-X)",
             "Self rotation: o(CCW), p(CW)",
             "Toggle q/e/z/c diagonal/orbit mode: m",

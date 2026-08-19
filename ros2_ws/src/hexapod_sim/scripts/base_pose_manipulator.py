@@ -1,9 +1,20 @@
 #!/usr/bin/env python3
 
 import math
+import sys
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable, Dict, List, Tuple
+
+try:
+    from robot_core import BasePose3D, HexapodModel, LegInfo, Point3D, RobotConfig
+except ImportError:
+    for candidate in Path(__file__).resolve().parents:
+        if (candidate / "robot_core").is_dir():
+            sys.path.insert(0, str(candidate))
+            break
+    from robot_core import BasePose3D, HexapodModel, LegInfo, Point3D, RobotConfig
 
 import rclpy
 from control_msgs.action import FollowJointTrajectory
@@ -13,38 +24,6 @@ from rclpy.node import Node
 from trajectory_msgs.msg import JointTrajectoryPoint
 
 sample_rate = 0.04
-
-
-@dataclass(frozen=True)
-class FramePose:
-    x: float
-    y: float
-    theta_deg: float
-
-
-@dataclass(frozen=True)
-class LegInfo:
-    leg_id: int
-    joint_names: Tuple[str, str, str]
-    frame_pose: FramePose
-    tripod: str
-
-
-@dataclass
-class Point3D:
-    x: float
-    y: float
-    z: float
-
-
-@dataclass(frozen=True)
-class BasePose3D:
-    x: float
-    y: float
-    z: float
-    roll: float
-    pitch: float
-    yaw: float
 
 
 @dataclass(frozen=True)
@@ -68,13 +47,7 @@ class ElevationPitchKeyboardController(Node):
     def __init__(self) -> None:
         super().__init__("elevation_pitch_pose_controller")
 
-        self.L1 = 0.0385
-        self.L2 = 0.0700
-        self.L3 = 0.1020
-
-        self.home_x = 0.110
-        self.home_y = 0.000
-        self.home_z = -0.050
+        self.robot_model = HexapodModel(RobotConfig())
 
         self.joint_mins = [-2.0 * math.pi, -2.0 * math.pi, -2.0 * math.pi]
         self.joint_maxs = [2.0 * math.pi, 2.0 * math.pi, 2.0 * math.pi]
@@ -90,20 +63,14 @@ class ElevationPitchKeyboardController(Node):
         self.trajectory_id = str(self.declare_parameter("trajectory_id", "").value).strip()
         self.target_base_pose = self._parse_pose_parameter(pose_text)
 
-        self.legs: List[LegInfo] = [
-            LegInfo(1, ("jl11", "jl12", "jl13"), FramePose(-0.0535, 0.0900, 135.0), "A"),
-            LegInfo(2, ("jl21", "jl22", "jl23"), FramePose(-0.0700, 0.0000, 180.0), "B"),
-            LegInfo(3, ("jl31", "jl32", "jl33"), FramePose(-0.0535, -0.0900, -135.0), "A"),
-            LegInfo(4, ("jl41", "jl42", "jl43"), FramePose(0.0535, 0.0900, 45.0), "B"),
-            LegInfo(5, ("jl51", "jl52", "jl53"), FramePose(0.0700, 0.0000, 0.0), "A"),
-            LegInfo(6, ("jl61", "jl62", "jl63"), FramePose(0.0535, -0.0900, -45.0), "B"),
-        ]
-        self.joint_names_flat = [joint for leg in self.legs for joint in leg.joint_names]
-        self.neutral_tip_positions: Dict[int, Point3D] = {
-            leg.leg_id: Point3D(self.home_x, self.home_y, self.home_z)
+        self.legs: List[LegInfo] = list(self.robot_model.legs)
+        self.joint_names_flat = [
+            f"jl{leg.leg_id}{joint}"
             for leg in self.legs
-        }
-        self.neutral_base_pose = BasePose3D(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+            for joint in range(1, 4)
+        ]
+        self.neutral_tip_positions = self.robot_model.neutral_tip_positions()
+        self.neutral_base_pose = BasePose3D()
         circle_radius = 0.045
         circle_radial_speed = 0.02
         circle_angular_velocity = math.radians(200.0)
@@ -576,36 +543,13 @@ class ElevationPitchKeyboardController(Node):
         return self._trajectory_complete(spec.terms, t_sec)
 
     def IK(self, tip: Point3D) -> Tuple[float, float, float]:
-        y = tip.y
-        x = tip.x
-        z = tip.z
-        j1 = -math.atan2(y, x)
-
-        x_prime = math.sqrt(x * x + y * y) - self.L1
-        d = math.sqrt(x_prime * x_prime + z * z)
-        min_reach = abs(self.L2 - self.L3)
-        max_reach = self.L2 + self.L3
-        if d > max_reach or d < min_reach:
+        if not self.robot_model.tip_is_reachable(tip):
+            distance = self.robot_model.tip_reach_distance(tip)
             self.get_logger().warn(
-                f"IK warning: unreachable tip x'={x_prime:.3f}, z={z:.3f}, d={d:.3f}. Clamping."
+                f"IK warning: unreachable tip z={tip.z:.3f}, "
+                f"d={distance:.3f}. Clamping."
             )
-            d = self._clamp(d, min_reach, max_reach)
-
-        alpha1 = math.atan2(-z, x_prime)
-        cos_alpha2 = self._clamp(
-            (self.L2 * self.L2 + d * d - self.L3 * self.L3) / (2.0 * self.L2 * d),
-            -1.0,
-            1.0,
-        )
-        alpha2 = math.acos(cos_alpha2)
-        cos_knee = self._clamp(
-            (self.L2 * self.L2 + self.L3 * self.L3 - d * d) / (2.0 * self.L2 * self.L3),
-            -1.0,
-            1.0,
-        )
-        j2 = alpha1 - alpha2
-        j3 = math.pi - math.acos(cos_knee)
-        return j1, j2, j3
+        return self.robot_model.inverse_kinematics(tip)
 
     def base_delta_to_tip_delta_3d(
         self,
@@ -614,27 +558,12 @@ class ElevationPitchKeyboardController(Node):
         leg: LegInfo,
         tip_local_1: Point3D,
     ) -> Point3D:
-        r_world_body1 = self._rotation_from_rpy(base1.roll, base1.pitch, base1.yaw)
-        r_world_body2 = self._rotation_from_rpy(base2.roll, base2.pitch, base2.yaw)
-        r_body1_world = self._mat_transpose(r_world_body1)
-
-        delta_world = (base2.x - base1.x, base2.y - base1.y, base2.z - base1.z)
-        delta_body = self._mat_vec(r_body1_world, delta_world)
-        r_body = self._mat_mul(r_body1_world, r_world_body2)
-
-        r_bl = self._rotation_leg_to_body(leg)
-        r_lb = self._mat_transpose(r_bl)
-        mount_body = (leg.frame_pose.x, leg.frame_pose.y, 0.0)
-
-        delta_leg = self._mat_vec(
-            r_lb,
-            self._vec_add(delta_body, self._mat_vec(self._mat_sub_identity(r_body), mount_body)),
+        return self.robot_model.base_delta_to_tip_delta_3d(
+            base1,
+            base2,
+            leg,
+            tip_local_1,
         )
-        r_leg = self._mat_mul(self._mat_mul(r_lb, r_body), r_bl)
-
-        tip1 = (tip_local_1.x, tip_local_1.y, tip_local_1.z)
-        tip2 = self._mat_vec(self._mat_transpose(r_leg), self._vec_sub(tip1, delta_leg))
-        return Point3D(tip2[0] - tip1[0], tip2[1] - tip1[1], tip2[2] - tip1[2])
 
     def _within_joint_limits(self, joints: Tuple[float, float, float]) -> bool:
         for idx, value in enumerate(joints):

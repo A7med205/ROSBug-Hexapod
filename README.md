@@ -1,12 +1,20 @@
-# Hexapod shared gait controller
+# Hexapod shared motion controller
 
 This repository combines the physical Servo 2040 controller and the ROS 2
-simulation around one transport-independent lite gait implementation.
+simulation around the same transport-independent robot model, gait generator,
+posture generator, and mode coordinator.
 
 ## Layout
 
-- `gait_core/lite_gait.py`: geometry, IK, body-frame stance displacement,
-  hardware-tuned templates, joint gating, and the latest-command coordinator.
+- `robot_core/model.py`: canonical dimensions, leg frames, fixed-foot body
+  transforms, and inverse kinematics.
+- `robot_core/motion_batch.py`: transport-neutral joint batches and shared goal
+  IDs.
+- `robot_core/coordinator.py`: startup and normal/auto/posture mode arbitration.
+- `gait_core/lite_gait.py`: body-frame stance displacement, hardware-tuned gait
+  templates, joint gating, and gait state-machine primitives.
+- `posture_core/posture.py`: relative elevation, pitch, and roll planning,
+  smoothed profiles, global IK-boundary clamping, and posture state.
 - `common/keyboard_input.py`: common direct keyboard mapping.
 - `hardware/board_interface.py`: host keyboard and binary serial adapter.
 - `hardware/main.py`: Servo 2040 validation, calibration, and timed discrete
@@ -16,8 +24,9 @@ simulation around one transport-independent lite gait implementation.
   `FollowJointTrajectory` adapter.
 
 Both adapters receive the same `JointBatch` values from the core. Gait batches
-end at half-step boundaries. Normal-mode commands retain latest-command
-behavior; auto-mode jobs are atomic and discard other movement commands.
+end at half-step boundaries. Posture profiles are split into at most 64 points
+per batch for the existing firmware protocol without changing the logical
+posture command.
 
 ## Keyboard controls
 
@@ -25,13 +34,16 @@ behavior; auto-mode jobs are atomic and discard other movement commands.
 | --- | --- |
 | `u` | Explicit startup/stand sequence |
 | `k` | Skip startup and assert the robot is already standing |
-| `0` | Graceful gait stop |
-| `t` | Toggle normal/auto mode, stopping first when moving |
+| `0` | Graceful gait stop, or return posture to neutral |
+| `t` | Cycle normal → auto → posture → normal |
 | `5w` | Example auto command: five steps in `+Y` |
 | `w`, `d`, `s`, `a` | Linear motion |
 | `q`, `e`, `z`, `c` | Diagonal or orbit motion |
 | `m` | Toggle diagonal/orbit mapping |
 | `o`, `p` | Self rotation |
+| `10]`, `10[` | Raise/lower the body by 10 mm in posture mode |
+| `5.`, `5,` | Add/subtract 5° pitch in posture mode |
+| `5'`, `5;` | Add/subtract 5° roll in posture mode |
 | `x` | Quit after the currently executing batch |
 
 Walking commands are ignored until startup completes or `k` explicitly skips
@@ -53,6 +65,27 @@ start and end stationary. Movement commands entered while an auto job is
 active are ignored and never deferred. `0` aborts through the normal graceful
 stop path. Toggling modes while moving does the same, and activates the new
 mode only after stationary is reached.
+
+Posture mode can only be entered from the canonical stationary pose. Posture
+numbers are relative deltas: repeated elevation, pitch, or roll commands
+accumulate from the last confirmed pose. Elevation can coexist with pitch or
+roll. Pitch and roll cannot coexist; the active tilt must first be commanded
+back to zero before the other tilt axis is accepted. Posture commands are not
+queued, and a completed non-neutral command enters `POSTURE_HOLD`, where the
+next posture command can be accepted.
+
+Posture trajectories use a 20 ms cubic smoothstep profile. Defaults are 5 mm/s
+and 20 mm/s² for elevation, and 5°/s and 20°/s² for pitch and roll. A requested
+pose outside the six-leg IK workspace is reduced along the requested rigid-body
+motion to the last globally reachable pose; individual legs are never clamped
+independently. The adapter reports the requested and applied delta when this
+happens. These are geometric limits only and are intended to support simulation
+commissioning of the final operational limits.
+
+Leaving posture mode removes pitch or roll first, then returns elevation to
+zero, and activates normal or auto mode only after the canonical stationary
+pose is confirmed. `0` performs the same neutral return while remaining in
+posture mode.
 
 There is currently no emergency-stop protocol. A serial or ROS batch already
 in progress runs to completion. Use `0` for the coordinated final half-step.
@@ -105,9 +138,11 @@ From the repository root:
 python3 -m unittest discover -s tests -v
 ```
 
-Tests cover hardware template sizes, startup and transition boundaries,
-latest-command behavior, protocol round trips and corruption, finite batch
-values, and calibrated pulse regression checks.
+Tests cover hardware template sizes, startup and three-mode transition
+boundaries, relative posture composition, pitch/roll exclusion, smoothed batch
+splitting, IK-boundary clamping, neutral return ordering, latest-command
+behavior, protocol validation, finite batch values, and calibrated pulse
+regression checks.
 
 ## Imported history
 

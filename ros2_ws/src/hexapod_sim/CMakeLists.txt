@@ -33,6 +33,8 @@ install(
 install(
   DIRECTORY
     ${CMAKE_CURRENT_SOURCE_DIR}/../../../gait_core
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../../posture_core
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../../robot_core
     ${CMAKE_CURRENT_SOURCE_DIR}/../../../common
   DESTINATION
     lib/${PROJECT_NAME}
