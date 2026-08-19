@@ -15,26 +15,44 @@ simulation around one transport-independent lite gait implementation.
 - `ros2_ws/src/hexapod_sim/scripts/sim_interface.py`: direct keyboard to ROS
   `FollowJointTrajectory` adapter.
 
-Both adapters receive the same `JointBatch` values from the core. Normal gait
-batches end at half-step boundaries. Commands are latched rather than queued;
-only the latest requested trajectory is considered at the next legal gait
-transition.
+Both adapters receive the same `JointBatch` values from the core. Gait batches
+end at half-step boundaries. Normal-mode commands retain latest-command
+behavior; auto-mode jobs are atomic and discard other movement commands.
 
 ## Keyboard controls
 
 | Key | Command |
 | --- | --- |
 | `u` | Explicit startup/stand sequence |
+| `k` | Skip startup and assert the robot is already standing |
 | `0` | Graceful gait stop |
+| `t` | Toggle normal/auto mode, stopping first when moving |
+| `5w` | Example auto command: five steps in `+Y` |
 | `w`, `d`, `s`, `a` | Linear motion |
 | `q`, `e`, `z`, `c` | Diagonal or orbit motion |
 | `m` | Toggle diagonal/orbit mapping |
 | `o`, `p` | Self rotation |
 | `x` | Quit after the currently executing batch |
 
-Walking commands are ignored until startup completes. Startup first commands
-the configured initial tip pose, holds it for two seconds, and then plays a
-60-point descent to the exact standing pose.
+Walking commands are ignored until startup completes or `k` explicitly skips
+it. Skip-startup sends no movement: it asserts that the physical robot already
+matches the canonical neutral standing pose. Startup first commands the
+configured initial tip pose, holds it for two seconds, and then plays a
+60-point descent to that standing pose.
+
+Normal mode accepts bare movement keys as continuous commands. Auto mode only
+accepts counted movement commands entered as a numeric prefix followed by a
+movement key. Counts must be integers of at least two. A count of `N` executes:
+
+```text
+starting half-step + (N - 1) full steps + final half-step
+```
+
+The starting and final halves contribute one combined step. Auto jobs always
+start and end stationary. Movement commands entered while an auto job is
+active are ignored and never deferred. `0` aborts through the normal graceful
+stop path. Toggling modes while moving does the same, and activates the new
+mode only after stationary is reached.
 
 There is currently no emergency-stop protocol. A serial or ROS batch already
 in progress runs to completion. Use `0` for the coordinated final half-step.

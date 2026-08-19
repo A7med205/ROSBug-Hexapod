@@ -15,8 +15,15 @@ from typing import Dict, List, Optional, Tuple
 
 class CommandKind:
     STARTUP = "startup"
+    SKIP_STARTUP = "skip_startup"
     STOP = "stop"
+    TOGGLE_MODE = "toggle_mode"
     WALK = "walk"
+
+
+class ControllerMode:
+    NORMAL = "normal"
+    AUTO = "auto"
 
 
 class ControllerState:
@@ -30,18 +37,44 @@ class ControllerState:
 class Command:
     kind: str
     trajectory_id: int = 0
+    steps: Optional[int] = None
 
     @classmethod
     def startup(cls) -> "Command":
         return cls(CommandKind.STARTUP)
 
     @classmethod
+    def skip_startup(cls) -> "Command":
+        return cls(CommandKind.SKIP_STARTUP)
+
+    @classmethod
     def stop(cls) -> "Command":
         return cls(CommandKind.STOP)
 
     @classmethod
-    def walk(cls, trajectory_id: int) -> "Command":
-        return cls(CommandKind.WALK, trajectory_id)
+    def toggle_mode(cls) -> "Command":
+        return cls(CommandKind.TOGGLE_MODE)
+
+    @classmethod
+    def walk(cls, trajectory_id: int, steps: Optional[int] = None) -> "Command":
+        return cls(CommandKind.WALK, trajectory_id, steps)
+
+
+class AutoJobStatus:
+    RUNNING = "running"
+    ABORTING = "aborting"
+
+
+@dataclass
+class AutoJob:
+    trajectory_id: int
+    requested_steps: int
+    remaining_half_steps: int
+    status: str = AutoJobStatus.RUNNING
+
+    @property
+    def completed_half_steps(self) -> int:
+        return self.requested_steps * 2 - self.remaining_half_steps
 
 
 @dataclass(frozen=True)
@@ -484,14 +517,17 @@ class LiteGaitModel:
 
 
 class LiteGaitCoordinator:
-    """Latest-command coordinator producing one half-step batch at a time."""
+    """Shared mode, readiness, and half-step gait coordinator."""
 
     def __init__(self, config: Optional[GaitConfig] = None) -> None:
         self.config = config or GaitConfig()
         self.model = LiteGaitModel(self.config)
         self.state = ControllerState.AWAITING_STARTUP
+        self.mode = ControllerMode.NORMAL
+        self.requested_mode = ControllerMode.NORMAL
         self.requested_trajectory_id = 0
         self.active_trajectory_id = 0
+        self.auto_job: Optional[AutoJob] = None
         self.next_full_pull_tripod = "B"
         self._walk_half = "first"
         self._startup_stage = ""
@@ -505,10 +541,45 @@ class LiteGaitCoordinator:
 
     @property
     def is_stationary(self) -> bool:
-        return self.state in (
-            ControllerState.AWAITING_STARTUP,
-            ControllerState.STATIONARY,
-        ) and self._pending is None
+        return self.state == ControllerState.STATIONARY and self._pending is None
+
+    def _reset_motion_to_stationary(self) -> None:
+        self.state = ControllerState.STATIONARY
+        self.active_trajectory_id = 0
+        self.requested_trajectory_id = 0
+        self.next_full_pull_tripod = "B"
+        self._walk_half = "first"
+
+    def _finish_motion(self) -> None:
+        self._reset_motion_to_stationary()
+        self.auto_job = None
+        self.mode = self.requested_mode
+
+    @staticmethod
+    def _opposite_mode(mode: str) -> str:
+        return ControllerMode.AUTO if mode == ControllerMode.NORMAL else ControllerMode.NORMAL
+
+    def _request_mode_toggle(self) -> bool:
+        if self.state in (ControllerState.AWAITING_STARTUP, ControllerState.STARTING):
+            return False
+
+        motion_in_progress = self.state == ControllerState.WALKING or self._pending is not None
+        base_mode = self.requested_mode if motion_in_progress else self.mode
+        self.requested_mode = self._opposite_mode(base_mode)
+        if self.state == ControllerState.STATIONARY and self._pending is None:
+            # A mode change at rest cancels any requested-but-not-started
+            # movement or auto job; nothing is deferred into the new mode.
+            self.requested_trajectory_id = 0
+            self.auto_job = None
+            self.mode = self.requested_mode
+            return True
+
+        # Mode changes are only activated after a guaranteed stationary
+        # transition. Toggling an auto job is therefore also an explicit abort.
+        self.requested_trajectory_id = 0
+        if self.auto_job is not None:
+            self.auto_job.status = AutoJobStatus.ABORTING
+        return True
 
     def request(self, command: Command) -> bool:
         if command.kind == CommandKind.STARTUP:
@@ -518,8 +589,29 @@ class LiteGaitCoordinator:
             self._startup_stage = "pose"
             return True
 
+        if command.kind == CommandKind.SKIP_STARTUP:
+            if self.state != ControllerState.AWAITING_STARTUP or self._pending:
+                return False
+            # This is an assertion, not a movement: the caller guarantees that
+            # the physical robot already matches the canonical standing pose.
+            self.current_joint_goal = self.model.neutral_joint_goal()
+            self.mode = ControllerMode.NORMAL
+            self.requested_mode = ControllerMode.NORMAL
+            self.auto_job = None
+            self._startup_stage = ""
+            self._reset_motion_to_stationary()
+            return True
+
+        if command.kind == CommandKind.TOGGLE_MODE:
+            return self._request_mode_toggle()
+
         if command.kind == CommandKind.STOP:
             self.requested_trajectory_id = 0
+            if self.auto_job is not None:
+                if self.state == ControllerState.STATIONARY and self._pending is None:
+                    self.auto_job = None
+                else:
+                    self.auto_job.status = AutoJobStatus.ABORTING
             return True
 
         if command.kind != CommandKind.WALK:
@@ -528,6 +620,33 @@ class LiteGaitCoordinator:
             return False
         if self.state in (ControllerState.AWAITING_STARTUP, ControllerState.STARTING):
             return False
+
+        # Auto jobs are atomic. Movement commands received while one is active
+        # are discarded rather than deferred for later execution.
+        if self.auto_job is not None:
+            return False
+        if self.requested_mode != self.mode:
+            return False
+
+        if self.mode == ControllerMode.NORMAL:
+            if command.steps is not None:
+                return False
+            self.requested_trajectory_id = command.trajectory_id
+            return True
+
+        if self.state != ControllerState.STATIONARY:
+            return False
+        if (
+            isinstance(command.steps, bool)
+            or not isinstance(command.steps, int)
+            or command.steps < 2
+        ):
+            return False
+        self.auto_job = AutoJob(
+            trajectory_id=command.trajectory_id,
+            requested_steps=command.steps,
+            remaining_half_steps=command.steps * 2,
+        )
         self.requested_trajectory_id = command.trajectory_id
         return True
 
@@ -685,6 +804,26 @@ class LiteGaitCoordinator:
             raise RuntimeError(f"invalid controller state: {self.state}")
 
         if self._walk_half == "first":
+            if self.auto_job is not None:
+                pull = self.next_full_pull_tripod
+                if self.auto_job.status == AutoJobStatus.ABORTING:
+                    return self._prepare_gait_batch(
+                        f"auto abort half-step t{self.active_trajectory_id}",
+                        self.active_trajectory_id,
+                        pull,
+                        "half1",
+                        "half2",
+                        "auto_abort",
+                    )
+                if self.auto_job.remaining_half_steps == 1:
+                    return self._prepare_gait_batch(
+                        f"auto final half-step t{self.active_trajectory_id}",
+                        self.active_trajectory_id,
+                        pull,
+                        "half1",
+                        "half2",
+                        "auto_complete",
+                    )
             if self.requested_trajectory_id == 0:
                 pull = self.next_full_pull_tripod
                 return self._prepare_gait_batch(
@@ -707,7 +846,10 @@ class LiteGaitCoordinator:
 
         if self._walk_half == "second":
             trajectory_id = self.active_trajectory_id
-            if self.requested_trajectory_id in self.model.MOVING_TRAJECTORY_IDS:
+            if (
+                self.auto_job is None
+                and self.requested_trajectory_id in self.model.MOVING_TRAJECTORY_IDS
+            ):
                 trajectory_id = self.requested_trajectory_id
             pull = self.next_full_pull_tripod
             return self._prepare_gait_batch(
@@ -730,12 +872,21 @@ class LiteGaitCoordinator:
             return
 
         self.current_joint_goal = list(pending.end_joint_goal)
+        if (
+            self.auto_job is not None
+            and self.auto_job.status == AutoJobStatus.RUNNING
+            and pending.transition
+            in ("gait_start", "gait_first", "gait_second", "auto_complete")
+        ):
+            if self.auto_job.remaining_half_steps <= 0:
+                raise RuntimeError("auto job half-step count underflow")
+            self.auto_job.remaining_half_steps -= 1
+
         if pending.transition == "startup_pose":
             self._startup_stage = "descent"
         elif pending.transition == "startup_descent":
             self._startup_stage = ""
-            self.state = ControllerState.STATIONARY
-            self.requested_trajectory_id = 0
+            self._finish_motion()
         elif pending.transition == "gait_start":
             self.state = ControllerState.WALKING
             self.active_trajectory_id = pending.trajectory_id
@@ -750,9 +901,16 @@ class LiteGaitCoordinator:
             )
             self._walk_half = "first"
         elif pending.transition == "gait_stop":
-            self.state = ControllerState.STATIONARY
-            self.active_trajectory_id = 0
-            self.requested_trajectory_id = 0
-            self._walk_half = "first"
+            self._finish_motion()
+        elif pending.transition == "auto_complete":
+            if (
+                self.auto_job is not None
+                and self.auto_job.status == AutoJobStatus.RUNNING
+                and self.auto_job.remaining_half_steps != 0
+            ):
+                raise RuntimeError("auto job completed with remaining half-steps")
+            self._finish_motion()
+        elif pending.transition == "auto_abort":
+            self._finish_motion()
         else:
             raise RuntimeError(f"unknown batch transition: {pending.transition}")

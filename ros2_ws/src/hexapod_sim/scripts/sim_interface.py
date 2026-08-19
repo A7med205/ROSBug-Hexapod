@@ -106,7 +106,11 @@ class SimulationBatchExecutor(Node):
 
 def _describe_command(command) -> str:
     if command.kind == CommandKind.WALK:
-        return f"trajectory {command.trajectory_id}"
+        if command.steps is not None:
+            return f"trajectory {command.trajectory_id} for {command.steps} steps"
+        return f"trajectory {command.trajectory_id} continuously"
+    if command.kind == CommandKind.TOGGLE_MODE:
+        return "toggle normal/auto mode"
     return command.kind
 
 
@@ -134,6 +138,11 @@ def main() -> None:
                     node.get_logger().info(
                         f"Command {'accepted' if accepted else 'ignored'}: {description}"
                     )
+                    if accepted and result.command.kind == CommandKind.TOGGLE_MODE:
+                        node.get_logger().info(
+                            f"Mode: {coordinator.mode}; "
+                            f"requested mode: {coordinator.requested_mode}"
+                        )
                 quit_requested = quit_requested or result.quit_requested
 
             while rclpy.ok() and not quit_requested:
@@ -151,6 +160,8 @@ def main() -> None:
                 if not succeeded:
                     exit_code = 1
                     break
+                if coordinator.is_stationary:
+                    node.get_logger().info(f"Stationary; mode: {coordinator.mode}")
     except KeyboardInterrupt:
         exit_code = 130
     finally:

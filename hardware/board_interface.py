@@ -126,7 +126,11 @@ class BoardBatchExecutor:
 
 def _describe_command(command) -> str:
     if command.kind == CommandKind.WALK:
-        return f"trajectory {command.trajectory_id}"
+        if command.steps is not None:
+            return f"trajectory {command.trajectory_id} for {command.steps} steps"
+        return f"trajectory {command.trajectory_id} continuously"
+    if command.kind == CommandKind.TOGGLE_MODE:
+        return "toggle normal/auto mode"
     return command.kind
 
 
@@ -161,6 +165,11 @@ def main() -> None:
                     accepted = coordinator.request(result.command)
                     description = _describe_command(result.command)
                     print(f"command {'accepted' if accepted else 'ignored'}: {description}")
+                    if accepted and result.command.kind == CommandKind.TOGGLE_MODE:
+                        print(
+                            f"mode: {coordinator.mode}; "
+                            f"requested mode: {coordinator.requested_mode}"
+                        )
                 quit_requested = quit_requested or result.quit_requested
 
             while not quit_requested:
@@ -178,6 +187,8 @@ def main() -> None:
                 if not succeeded:
                     exit_code = 1
                     break
+                if coordinator.is_stationary:
+                    print(f"stationary; mode: {coordinator.mode}")
     except KeyboardInterrupt:
         exit_code = 130
     finally:
