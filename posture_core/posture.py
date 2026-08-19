@@ -25,9 +25,9 @@ class PostureState:
 @dataclass(frozen=True)
 class PostureConfig:
     sample_period: float = 0.02
-    elevation_velocity: float = 0.015
+    elevation_velocity: float = 0.030
     angular_velocity: float = math.radians(10.0)
-    elevation_acceleration: float = 0.040
+    elevation_acceleration: float = 0.050
     angular_acceleration: float = math.radians(40.0)
     elevation_knots: Tuple[float, ...] = (-0.025, 0.0, 0.050, 0.080, 0.100)
     roll_limit_knots: Tuple[float, ...] = tuple(

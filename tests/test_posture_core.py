@@ -58,8 +58,8 @@ class PostureCoordinatorTest(unittest.TestCase):
                 self.assertAlmostEqual(expected, actual, places=10)
 
     def test_default_profile_is_smoothed_and_split_at_interrupt_boundaries(self):
-        self.assertEqual(self.posture.config.elevation_velocity, 0.015)
-        self.assertEqual(self.posture.config.elevation_acceleration, 0.040)
+        self.assertEqual(self.posture.config.elevation_velocity, 0.030)
+        self.assertEqual(self.posture.config.elevation_acceleration, 0.050)
         self.assertAlmostEqual(
             math.degrees(self.posture.config.angular_velocity),
             10.0,
@@ -90,7 +90,7 @@ class PostureCoordinatorTest(unittest.TestCase):
             self.posture.config.elevation_acceleration + 1.0e-9,
         )
         batches = self.drain()
-        self.assertEqual([batch.point_count for batch in batches], [25, 25, 12])
+        self.assertEqual([batch.point_count for batch in batches], [25, 25, 5])
         self.assertTrue(all(batch.sample_period == 0.02 for batch in batches))
         self.assertEqual(self.posture.state, PostureState.POSTURE_HOLD)
         self.assertAlmostEqual(self.posture.current_pose.z, 0.010)

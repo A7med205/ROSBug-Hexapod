@@ -74,8 +74,8 @@ back to zero before the other tilt axis is accepted. Posture commands are not
 queued, and a completed non-neutral command enters `POSTURE_HOLD`, where the
 next posture command can be accepted.
 
-Posture trajectories use a 20 ms cubic smoothstep profile. Defaults are 15 mm/s
-and 40 mm/s² for elevation, and 10°/s and 40°/s² for pitch and roll. The measured
+Posture trajectories use a 20 ms cubic smoothstep profile. Defaults are 30 mm/s
+and 50 mm/s² for elevation, and 10°/s and 40°/s² for pitch and roll. The measured
 operating envelope is linearly interpolated between these elevation knots:
 
 | Elevation | Raw roll limit | Raw pitch limit |
