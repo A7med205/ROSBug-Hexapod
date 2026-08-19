@@ -142,16 +142,16 @@ the first sample that reaches the limit.
   half-step`. The two boundary halves contribute one combined step. Auto jobs
   start and end stationary, ignore other movement commands, and are aborted by
   `0` through the normal final-half path.
-- `posture` starts from canonical stationary and accepts relative elevation,
-  pitch, or roll deltas. Elevation can coexist with either tilt. Pitch and roll
-  cannot coexist; reset the active tilt before selecting the other axis.
+- `posture` starts from canonical stationary and accepts an objective elevation
+  target or relative pitch and roll changes. Elevation can coexist with either
+  tilt. Pitch and roll cannot coexist; reset the active tilt before selecting
+  the other axis.
   Completed non-neutral commands enter `POSTURE_HOLD`, so another posture
-  command can continue from the confirmed pose. Its displayed and commanded
-  elevation zero is re-anchored to the confirmed stationary pose whenever the
-  mode is entered.
+  command can continue from the confirmed pose. Elevation is always expressed
+  as the objective body height above the stance-tip plane.
 - Toggling modes while moving first requests a stationary transition. Leaving
-  posture removes pitch or roll, returns elevation to zero, and only then
-  activates normal or auto mode.
+  posture removes pitch or roll, returns to the stationary objective elevation,
+  and only then activates normal or auto mode.
 - Startup is explicit. `u` commands the startup pose and descent; `k` sends no
   movement and asserts that the robot is already at the canonical standing
   pose. From a stationary pose, `j` reverses the startup tip motion and ends at
@@ -279,7 +279,7 @@ The controls are identical for hardware and simulation.
 | `m` | Toggle the `q/e/z/c` mapping between diagonal and orbit |
 | `o`, `p` | Rotate counterclockwise / clockwise |
 | `5w` | Example auto command: move `+Y` for five counted steps |
-| `10]`, `10[` | Raise / lower by 10 mm in posture mode |
+| `100]` | Move to an objective elevation of 100 mm in posture mode |
 | `5.`, `5,` | Add / subtract 5° pitch in posture mode |
 | `5'`, `5;` | Add / subtract 5° roll in posture mode |
 | `r` | Reset pitch or roll to zero while preserving elevation |
@@ -287,12 +287,13 @@ The controls are identical for hardware and simulation.
 | Escape | Clear the numeric prefix |
 | `x` | Quit after the current batch |
 
-Posture commands require a numeric prefix and are relative to the last
-confirmed pose. They are not queued. During an active posture command, the
-first `0` discards remaining points after the current 25-point boundary and
-enters `POSTURE_HOLD`; a second `0` from that hold returns to neutral. `r` uses
-the same smoothed, non-queued motion to zero the active tilt without changing
-elevation.
+Posture commands require a numeric prefix and are not queued. `]` interprets
+that number as an objective elevation in millimetres; pitch and roll numbers
+remain relative degree changes from the confirmed pose. During an active
+posture command, the first `0` discards remaining points after the current
+25-point boundary and enters `POSTURE_HOLD`; a second `0` from that hold
+returns to the stationary objective elevation and zero tilt. `r` uses the same
+smoothed, non-queued motion to zero the active tilt without changing elevation.
 
 ## Hardcoded parameters
 
@@ -337,6 +338,7 @@ Leg frames and tripod membership:
 | Femur length `l2` | 70.0 mm |
 | Tibia length `l3` | 102.0 mm |
 | Neutral local tip | `(x, y, z) = (110, 0, -50)` mm |
+| Stationary objective elevation `-home_z` | 50 mm |
 | Neutral IK angles per leg | approximately `(0°, -45.096°, +122.591°)` |
 | Femur/tibia planar reach after coxa | 32–172 mm |
 
@@ -357,7 +359,7 @@ along its motion path rather than clamping legs independently.
 | Self-rotation angular speed | 0.40 rad/s |
 | Orbit angular speed | 0.30 rad/s |
 | External orbit radius | 0.30 m |
-| Startup tip z | +10 mm |
+| Startup local tip z | +10 mm |
 | Startup descent speed | 0.05 m/s |
 | Startup pose hold | 2.0 s |
 | Startup descent | 60 points / 1.2 s |
@@ -385,18 +387,17 @@ Posture trajectories use a 20 ms cubic smoothstep profile.
 | Pitch/roll maximum acceleration | 40°/s² |
 | Maximum batch | 25 points / 0.5 s |
 | Operating angular-limit scale | 0.9 |
-| Measured-envelope stationary reference | +10 mm objective elevation |
+| Minimum objective elevation | 25 mm |
+| Stationary objective elevation `-home_z` | 50 mm |
+| Maximum objective elevation | 150 mm |
 | IK boundary-search iterations | 52 |
 | Neutral tolerance | `1e-9` |
 
-Posture elevation commands are relative to the stationary pose: relative
-`z = 0` always means the stationary joint goal from which posture mode was
-entered. The current safety trials, however, recorded objective elevations
-around a +10 mm stationary objective. Limit checks therefore use
-`objective elevation = relative z + 10 mm`. With the current reference, the
-allowed relative elevation interval is -35 mm through +90 mm. If the
-stationary objective changes, `limit_reference_elevation` must be changed to
-match it so the measured envelope remains meaningful.
+Objective elevation is derived directly from the kinematic model. The
+stationary value is `-home_z`; changing `home_z` therefore changes the
+stationary posture target automatically without moving or reinterpreting the
+fixed 25–150 mm operating envelope. Internally, the fixed-foot transform uses
+the difference between the commanded objective elevation and `-home_z`.
 
 The measured angular envelope is linearly interpolated between objective
 elevation knots. The scaled values are the limits actually applied by the
@@ -404,11 +405,11 @@ coordinator.
 
 | Objective elevation | Raw roll | Applied roll | Raw pitch | Applied pitch |
 | ---: | ---: | ---: | ---: | ---: |
-| -25 mm | 0° | 0° | 0° | 0° |
-| 0 mm | 12° | 10.8° | 12° | 10.8° |
-| 50 mm | 20° | 18° | 25° | 22.5° |
-| 80 mm | 10° | 9° | 12° | 10.8° |
-| 100 mm | 0° | 0° | 0° | 0° |
+| 25 mm | 0° | 0° | 0° | 0° |
+| 50 mm | 12° | 10.8° | 12° | 10.8° |
+| 100 mm | 20° | 18° | 25° | 22.5° |
+| 130 mm | 10° | 9° | 12° | 10.8° |
+| 150 mm | 0° | 0° | 0° | 0° |
 
 ### Hardware protocol and playback
 
@@ -516,9 +517,9 @@ colcon build --symlink-install --packages-select hexapod_sim
 ```
 
 The tests cover startup/sit-down readiness locking, exact executable template
-sizes, equal leg sequence lengths, future-only boundary points, sub-degree sample propagation,
-normal/auto/posture transitions, counted and aborted gait jobs, midpoint
-direction latching, relative posture composition, pitch/roll exclusion,
-smoothed profile limits, posture interruption boundaries, IK/envelope
-clamping, protocol validation and idempotence, finite joint values, and
-calibrated pulse regression.
+sizes, equal leg sequence lengths, future-only boundary points, sub-degree
+sample propagation, normal/auto/posture transitions, counted and aborted gait
+jobs, midpoint direction latching, objective elevation targeting, pitch/roll
+exclusion, smoothed profile limits, posture interruption boundaries,
+IK/envelope clamping, protocol validation and idempotence, finite joint values,
+and calibrated pulse regression.

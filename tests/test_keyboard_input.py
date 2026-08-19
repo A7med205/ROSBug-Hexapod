@@ -48,28 +48,37 @@ class KeyboardInputTest(unittest.TestCase):
         self.assertEqual(self.keyboard.numeric_prefix, "")
         self.assertEqual(self.keyboard.feed_key("q").command, Command.walk(6))
 
-    def test_posture_values_use_millimeters_and_degrees(self):
-        self.keyboard.feed_key("1")
-        self.keyboard.feed_key("0")
+    def test_posture_values_use_objective_millimeters_and_relative_degrees(self):
+        self.keyboard.feed_key("7")
+        self.keyboard.feed_key("5")
         self.assertEqual(
             self.keyboard.feed_key("]").command,
-            Command.posture(PostureAxis.ELEVATION, 0.010),
+            Command.elevation(0.075),
         )
 
         self.keyboard.feed_key("5")
         command = self.keyboard.feed_key(",").command
         self.assertEqual(command.posture_axis, PostureAxis.PITCH)
-        self.assertAlmostEqual(command.posture_delta, math.radians(-5.0))
+        self.assertAlmostEqual(command.posture_value, math.radians(-5.0))
 
         self.keyboard.feed_key("3")
         command = self.keyboard.feed_key("'").command
         self.assertEqual(command.posture_axis, PostureAxis.ROLL)
-        self.assertAlmostEqual(command.posture_delta, math.radians(3.0))
+        self.assertAlmostEqual(command.posture_value, math.radians(3.0))
 
     def test_posture_command_requires_numeric_prefix(self):
         result = self.keyboard.feed_key("]")
         self.assertIsNone(result.command)
-        self.assertIn("requires a numeric value", result.notices[0])
+        self.assertIn("requires an objective", result.notices[0])
+
+    def test_relative_elevation_key_is_rejected(self):
+        self.keyboard.feed_key("1")
+        result = self.keyboard.feed_key("[")
+        self.assertIsNone(result.command)
+        self.assertEqual(self.keyboard.numeric_prefix, "")
+        self.assertIn("objective target", result.notices[0])
+        with self.assertRaises(ValueError):
+            Command.posture(PostureAxis.ELEVATION, 0.001)
 
 
 if __name__ == "__main__":

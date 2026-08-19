@@ -49,7 +49,7 @@ class Command:
     steps: Optional[int] = None
     mode: Optional[str] = None
     posture_axis: Optional[str] = None
-    posture_delta: Optional[float] = None
+    posture_value: Optional[float] = None
 
     @classmethod
     def startup(cls) -> "Command":
@@ -81,10 +81,20 @@ class Command:
 
     @classmethod
     def posture(cls, axis: str, delta: float) -> "Command":
+        if axis == PostureAxis.ELEVATION:
+            raise ValueError("use Command.elevation() for an objective elevation")
         return cls(
             CommandKind.POSTURE,
             posture_axis=axis,
-            posture_delta=delta,
+            posture_value=delta,
+        )
+
+    @classmethod
+    def elevation(cls, target: float) -> "Command":
+        return cls(
+            CommandKind.POSTURE,
+            posture_axis=PostureAxis.ELEVATION,
+            posture_value=target,
         )
 
     @classmethod

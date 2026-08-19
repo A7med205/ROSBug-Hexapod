@@ -29,10 +29,9 @@ class PostureConfig:
     angular_velocity: float = math.radians(10.0)
     elevation_acceleration: float = 0.050
     angular_acceleration: float = math.radians(40.0)
-    # The measured envelope used +10 mm as its stationary objective. Runtime
-    # posture z remains relative to whichever stationary pose was confirmed.
-    limit_reference_elevation: float = 0.010
-    elevation_knots: Tuple[float, ...] = (-0.025, 0.0, 0.050, 0.080, 0.100)
+    # Objective body elevations above the stance-tip plane. The stationary
+    # objective is derived from the model as -home_z.
+    elevation_knots: Tuple[float, ...] = (0.025, 0.050, 0.100, 0.130, 0.150)
     roll_limit_knots: Tuple[float, ...] = tuple(
         math.radians(value) for value in (0.0, 12.0, 20.0, 10.0, 0.0)
     )
@@ -48,14 +47,14 @@ class PostureConfig:
 @dataclass(frozen=True)
 class PosturePlanResult:
     axis: str
-    requested_delta: float
-    applied_delta: float
+    requested_value: float
+    applied_value: float
 
     @property
     def was_clamped(self) -> bool:
         return not math.isclose(
-            self.requested_delta,
-            self.applied_delta,
+            self.requested_value,
+            self.applied_value,
             rel_tol=1.0e-8,
             abs_tol=1.0e-10,
         )
@@ -85,7 +84,7 @@ class _PendingPostureBatch:
 
 
 class PostureCoordinator:
-    """Plan atomic relative posture commands and retain their confirmed pose."""
+    """Plan absolute elevation and relative tilt commands from confirmed state."""
 
     def __init__(
         self,
@@ -116,8 +115,6 @@ class PostureCoordinator:
         )
         if any(not math.isfinite(value) or value <= 0.0 for value in positive):
             raise ValueError("posture timing, velocity, and acceleration must be positive")
-        if not math.isfinite(cfg.limit_reference_elevation):
-            raise ValueError("posture limit reference elevation must be finite")
         if cfg.max_batch_points < 1:
             raise ValueError("max_batch_points must be positive")
         if cfg.ik_boundary_iterations < 1:
@@ -244,15 +241,25 @@ class PostureCoordinator:
                     break
         return raw_limit * cfg.operating_limit_scale
 
-    def objective_elevation(self, relative_elevation: float) -> float:
-        """Map stationary-relative posture z into the measured limit frame."""
+    @property
+    def stationary_elevation(self) -> float:
+        """Return the objective elevation represented by the gait home pose."""
 
-        return self.config.limit_reference_elevation + relative_elevation
+        return -self.model.config.home_z
+
+    @property
+    def current_elevation(self) -> float:
+        return self.elevation_for_pose(self.current_pose)
+
+    def elevation_for_pose(self, pose: BasePose3D) -> float:
+        """Convert internal body displacement into objective elevation."""
+
+        return self.stationary_elevation + pose.z
 
     def pose_is_allowed(self, pose: BasePose3D) -> bool:
         cfg = self.config
         tolerance = cfg.zero_tolerance
-        objective_elevation = self.objective_elevation(pose.z)
+        objective_elevation = self.elevation_for_pose(pose)
         if not (
             cfg.elevation_knots[0] - tolerance
             <= objective_elevation
@@ -352,7 +359,7 @@ class PostureCoordinator:
         return _PostureJob(phase_name=phase_name, samples=samples, is_return=is_return)
 
     def request_delta(self, axis: str, delta: float) -> bool:
-        if axis not in PostureAxis.ALL:
+        if axis not in (PostureAxis.PITCH, PostureAxis.ROLL):
             return False
         if isinstance(delta, bool) or not isinstance(delta, (int, float)):
             return False
@@ -388,6 +395,41 @@ class PostureCoordinator:
             target,
             axis,
             f"posture {axis}",
+        )
+        if self._job is not None:
+            self.state = PostureState.MOVING
+        return True
+
+    def request_elevation(self, objective_elevation: float) -> bool:
+        """Move to an absolute body elevation above the stance-tip plane."""
+
+        if isinstance(objective_elevation, bool) or not isinstance(
+            objective_elevation,
+            (int, float),
+        ):
+            return False
+        objective_elevation = float(objective_elevation)
+        if not math.isfinite(objective_elevation):
+            return False
+        if self.is_busy or self._return_requested:
+            return False
+
+        requested_target = replace(
+            self.current_pose,
+            z=objective_elevation - self.stationary_elevation,
+        )
+        target = self._clamp_target(requested_target)
+        applied_elevation = self.elevation_for_pose(target)
+        self.last_plan_result = PosturePlanResult(
+            PostureAxis.ELEVATION,
+            objective_elevation,
+            applied_elevation,
+        )
+        self._job = self._make_job(
+            self.current_pose,
+            target,
+            PostureAxis.ELEVATION,
+            "posture elevation",
         )
         if self._job is not None:
             self.state = PostureState.MOVING

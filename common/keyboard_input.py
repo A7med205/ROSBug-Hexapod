@@ -18,8 +18,6 @@ DIAGONAL_KEYS = {"q": 4, "e": 3, "z": 10, "c": 11}
 ORBIT_KEYS = {"q": 6, "e": 12, "z": 13, "c": 5}
 ROTATION_KEYS = {"o": 14, "p": 7}
 POSTURE_KEYS = {
-    "[": (PostureAxis.ELEVATION, -0.001),
-    "]": (PostureAxis.ELEVATION, 0.001),
     ",": (PostureAxis.PITCH, -math.pi / 180.0),
     ".": (PostureAxis.PITCH, math.pi / 180.0),
     ";": (PostureAxis.ROLL, -math.pi / 180.0),
@@ -102,6 +100,20 @@ class KeyboardInput:
             self.numeric_prefix = ""
             return KeyboardPoll(Command.reset_tilt(), False, notices)
 
+        if key == "]":
+            if not self.numeric_prefix:
+                notices.append(
+                    "elevation command requires an objective millimeter value"
+                )
+                return KeyboardPoll(None, False, notices)
+            target = int(self.numeric_prefix) * 0.001
+            self.numeric_prefix = ""
+            return KeyboardPoll(Command.elevation(target), False, notices)
+        if key == "[":
+            self.numeric_prefix = ""
+            notices.append("elevation is an objective target; use ]")
+            return KeyboardPoll(None, False, notices)
+
         posture_mapping = POSTURE_KEYS.get(key)
         if posture_mapping is not None:
             if not self.numeric_prefix:
@@ -155,7 +167,7 @@ def help_text(controller_name: str) -> str:
             "Graceful stop: 0",
             "Cycle normal/auto/posture mode: t",
             "Auto counted motion: type count then movement (for example 5w)",
-            "Posture elevation: [(-mm), ](+mm), for example 10]",
+            "Posture objective elevation: ] (mm), for example 100]",
             "Posture pitch: ,(-deg), .(+deg); roll: ;(-deg), '(+deg)",
             "Reset posture pitch/roll, preserving elevation: r",
             "Lines: w(+Y), d(+X), s(-Y), a(-X)",

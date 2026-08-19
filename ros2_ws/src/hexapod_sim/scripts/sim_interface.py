@@ -118,10 +118,10 @@ def _describe_command(command) -> str:
         return "sit down and restore startup lock"
     if command.kind == CommandKind.POSTURE:
         if command.posture_axis == PostureAxis.ELEVATION:
-            return f"elevation {command.posture_delta * 1000.0:+.1f} mm"
+            return f"objective elevation {command.posture_value * 1000.0:.1f} mm"
         return (
             f"{command.posture_axis} "
-            f"{math.degrees(command.posture_delta):+.1f} deg"
+            f"{math.degrees(command.posture_value):+.1f} deg"
         )
     if command.kind == CommandKind.RESET_TILT:
         return "reset posture pitch/roll"
@@ -133,14 +133,14 @@ def _posture_result_notice(coordinator: HexapodCoordinator) -> str:
     if result is None or not result.was_clamped:
         return ""
     if result.axis == PostureAxis.ELEVATION:
-        requested = result.requested_delta * 1000.0
-        applied = result.applied_delta * 1000.0
+        requested = result.requested_value * 1000.0
+        applied = result.applied_value * 1000.0
         unit = "mm"
     else:
-        requested = math.degrees(result.requested_delta)
-        applied = math.degrees(result.applied_delta)
+        requested = math.degrees(result.requested_value)
+        applied = math.degrees(result.applied_value)
         unit = "deg"
-    return f"IK limit: requested {requested:+.3f} {unit}, applying {applied:+.3f} {unit}"
+    return f"posture limit: requested {requested:+.3f} {unit}, applying {applied:+.3f} {unit}"
 
 
 def main() -> None:
@@ -199,7 +199,8 @@ def main() -> None:
                     pose = coordinator.posture.current_pose
                     node.get_logger().info(
                         "Posture hold: "
-                        f"z={pose.z * 1000.0:+.2f} mm, "
+                        "elevation="
+                        f"{coordinator.posture.current_elevation * 1000.0:.2f} mm, "
                         f"pitch={math.degrees(pose.pitch):+.2f} deg, "
                         f"roll={math.degrees(pose.roll):+.2f} deg"
                     )

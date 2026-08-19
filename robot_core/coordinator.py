@@ -10,7 +10,7 @@ from gait_core.lite_gait import (
     LiteGaitCoordinator,
 )
 from posture_core import PostureConfig, PostureCoordinator
-from robot_core.control import Command, CommandKind, ControllerMode
+from robot_core.control import Command, CommandKind, ControllerMode, PostureAxis
 from robot_core.motion_batch import GoalIdAllocator, JointBatch
 
 
@@ -162,12 +162,14 @@ class HexapodCoordinator:
                 self.mode != ControllerMode.POSTURE
                 or self.requested_mode != ControllerMode.POSTURE
                 or command.posture_axis is None
-                or command.posture_delta is None
+                or command.posture_value is None
             ):
                 return False
+            if command.posture_axis == PostureAxis.ELEVATION:
+                return self.posture.request_elevation(command.posture_value)
             return self.posture.request_delta(
                 command.posture_axis,
-                command.posture_delta,
+                command.posture_value,
             )
 
         if command.kind == CommandKind.RESET_TILT:

@@ -1,7 +1,7 @@
 import math
 import unittest
 
-from gait_core import ControllerState
+from gait_core import ControllerState, GaitConfig
 from posture_core import PostureConfig, PostureCoordinator, PostureState
 from robot_core import BasePose3D, Command, ControllerMode, PostureAxis
 from robot_core.coordinator import HexapodCoordinator
@@ -68,7 +68,7 @@ class PostureCoordinatorTest(unittest.TestCase):
             math.degrees(self.posture.config.angular_acceleration),
             40.0,
         )
-        self.assertTrue(self.posture.request_delta(PostureAxis.ELEVATION, 0.010))
+        self.assertTrue(self.posture.request_elevation(0.060))
         positions = [0.0] + [
             sample.pose.z for sample in self.posture._job.samples
         ]
@@ -93,21 +93,21 @@ class PostureCoordinatorTest(unittest.TestCase):
         self.assertEqual([batch.point_count for batch in batches], [25, 25, 5])
         self.assertTrue(all(batch.sample_period == 0.02 for batch in batches))
         self.assertEqual(self.posture.state, PostureState.POSTURE_HOLD)
-        self.assertAlmostEqual(self.posture.current_pose.z, 0.010)
+        self.assertAlmostEqual(self.posture.current_elevation, 0.060)
 
-    def test_relative_commands_accumulate_from_confirmed_pose(self):
-        self.posture.request_delta(PostureAxis.ELEVATION, 0.004)
+    def test_objective_elevation_and_relative_tilt_continue_from_confirmed_pose(self):
+        self.posture.request_elevation(0.054)
         self.drain()
-        self.posture.request_delta(PostureAxis.ELEVATION, 0.003)
+        self.posture.request_elevation(0.057)
         self.drain()
-        self.assertAlmostEqual(self.posture.current_pose.z, 0.007)
+        self.assertAlmostEqual(self.posture.current_elevation, 0.057)
 
         self.posture.request_delta(PostureAxis.PITCH, math.radians(2.0))
         self.drain()
         self.posture.request_delta(PostureAxis.PITCH, math.radians(3.0))
         self.drain()
         self.assertAlmostEqual(math.degrees(self.posture.current_pose.pitch), 5.0)
-        self.assertAlmostEqual(self.posture.current_pose.z, 0.007)
+        self.assertAlmostEqual(self.posture.current_elevation, 0.057)
 
     def test_pitch_and_roll_are_mutually_exclusive_but_elevation_is_allowed(self):
         self.posture.request_delta(PostureAxis.PITCH, math.radians(4.0))
@@ -115,7 +115,7 @@ class PostureCoordinatorTest(unittest.TestCase):
         self.assertFalse(
             self.posture.request_delta(PostureAxis.ROLL, math.radians(1.0))
         )
-        self.assertTrue(self.posture.request_delta(PostureAxis.ELEVATION, 0.002))
+        self.assertTrue(self.posture.request_elevation(0.052))
         self.drain()
 
         self.assertTrue(
@@ -128,15 +128,15 @@ class PostureCoordinatorTest(unittest.TestCase):
         )
 
     def test_commands_are_not_queued(self):
-        self.assertTrue(self.posture.request_delta(PostureAxis.ELEVATION, 0.010))
-        self.assertFalse(self.posture.request_delta(PostureAxis.ELEVATION, 0.001))
+        self.assertTrue(self.posture.request_elevation(0.060))
+        self.assertFalse(self.posture.request_elevation(0.061))
         batch = self.posture.next_batch()
         self.assertFalse(self.posture.request_delta(PostureAxis.PITCH, 0.01))
         self.posture.complete_batch(batch.goal_id)
         self.assertFalse(self.posture.request_delta(PostureAxis.PITCH, 0.01))
 
     def test_tilt_reset_preserves_elevation_and_is_not_queued(self):
-        self.posture.request_delta(PostureAxis.ELEVATION, 0.005)
+        self.posture.request_elevation(0.055)
         self.drain()
         self.posture.request_delta(PostureAxis.ROLL, math.radians(2.0))
         self.drain()
@@ -151,16 +151,25 @@ class PostureCoordinatorTest(unittest.TestCase):
         )
         self.assertAlmostEqual(self.posture.current_pose.roll, 0.0)
         self.assertAlmostEqual(self.posture.current_pose.pitch, 0.0)
-        self.assertAlmostEqual(self.posture.current_pose.z, 0.005)
+        self.assertAlmostEqual(self.posture.current_elevation, 0.055)
         self.assertEqual(self.posture.state, PostureState.POSTURE_HOLD)
 
     def test_operating_envelope_clamps_the_complete_body_pose(self):
-        self.assertAlmostEqual(self.posture.config.limit_reference_elevation, 0.010)
-        self.assertAlmostEqual(self.posture.objective_elevation(0.0), 0.010)
-        self.assertTrue(self.posture.request_delta(PostureAxis.ELEVATION, 1.0))
+        self.assertEqual(
+            self.posture.config.elevation_knots,
+            (0.025, 0.050, 0.100, 0.130, 0.150),
+        )
+        self.assertAlmostEqual(self.posture.stationary_elevation, 0.050)
+        self.assertAlmostEqual(self.posture.current_elevation, 0.050)
+        self.assertFalse(
+            self.posture.request_delta(PostureAxis.ELEVATION, 0.001)
+        )
+        self.assertTrue(self.posture.request_elevation(0.050))
+        self.assertIsNone(self.posture.next_batch())
+        self.assertTrue(self.posture.request_elevation(1.0))
         result = self.posture.last_plan_result
         self.assertTrue(result.was_clamped)
-        self.assertAlmostEqual(result.applied_delta, 0.090, places=8)
+        self.assertAlmostEqual(result.applied_value, 0.150, places=8)
 
         target = self.posture._job.samples[-1].pose
         tips = self.model.tips_for_base_pose(target)
@@ -168,54 +177,65 @@ class PostureCoordinatorTest(unittest.TestCase):
         self.assertTrue(self.posture.pose_is_allowed(target))
 
         lower = PostureCoordinator(self.model)
-        self.assertTrue(lower.request_delta(PostureAxis.ELEVATION, -1.0))
+        self.assertTrue(lower.request_elevation(-1.0))
         self.assertAlmostEqual(
-            lower.last_plan_result.applied_delta,
-            -0.035,
+            lower.last_plan_result.applied_value,
+            0.025,
             places=8,
         )
+
+    def test_stationary_objective_elevation_tracks_home_z(self):
+        coordinator = HexapodCoordinator(gait_config=GaitConfig(home_z=-0.060))
+        posture = coordinator.posture
+        self.assertAlmostEqual(posture.stationary_elevation, 0.060)
+        self.assertAlmostEqual(posture.current_elevation, 0.060)
+
+        self.assertTrue(posture.request_elevation(0.100))
+        target = posture._job.samples[-1].pose
+        self.assertAlmostEqual(target.z, 0.040)
+        self.assertAlmostEqual(posture.elevation_for_pose(target), 0.100)
 
     def test_measured_angular_limits_are_scaled_and_interpolated(self):
         self.assertAlmostEqual(
             math.degrees(
-                self.posture.angular_limit_at_elevation(PostureAxis.ROLL, 0.050)
+                self.posture.angular_limit_at_elevation(PostureAxis.ROLL, 0.100)
             ),
             18.0,
         )
         self.assertAlmostEqual(
             math.degrees(
-                self.posture.angular_limit_at_elevation(PostureAxis.PITCH, 0.050)
+                self.posture.angular_limit_at_elevation(PostureAxis.PITCH, 0.100)
             ),
             22.5,
         )
         self.assertAlmostEqual(
             math.degrees(
-                self.posture.angular_limit_at_elevation(PostureAxis.PITCH, 0.080)
+                self.posture.angular_limit_at_elevation(PostureAxis.PITCH, 0.130)
             ),
             10.8,
         )
 
-        self.posture.request_delta(PostureAxis.ELEVATION, 0.050)
+        self.posture.request_elevation(0.100)
         self.drain()
         self.posture.request_delta(PostureAxis.PITCH, math.radians(100.0))
         result = self.posture.last_plan_result
         self.assertTrue(result.was_clamped)
-        self.assertAlmostEqual(math.degrees(result.applied_delta), 18.6, places=6)
+        self.assertAlmostEqual(math.degrees(result.applied_value), 22.5, places=6)
 
     def test_elevation_change_cannot_cross_a_narrowing_tilt_envelope(self):
-        self.posture.request_delta(PostureAxis.ELEVATION, 0.050)
+        self.posture.request_elevation(0.100)
         self.drain()
-        self.posture.request_delta(PostureAxis.PITCH, math.radians(18.6))
+        self.posture.request_delta(PostureAxis.PITCH, math.radians(22.5))
         self.drain()
 
-        self.assertTrue(self.posture.request_delta(PostureAxis.ELEVATION, 0.030))
+        self.assertTrue(self.posture.request_elevation(0.130))
         result = self.posture.last_plan_result
         self.assertTrue(result.was_clamped)
-        self.assertAlmostEqual(result.applied_delta, 0.0, places=8)
+        self.assertAlmostEqual(result.applied_value, 0.100, places=8)
         self.assertIsNone(self.posture.next_batch())
 
     def test_return_removes_tilt_before_elevation(self):
-        self.posture.request_delta(PostureAxis.ELEVATION, 0.004)
+        self.posture.request_elevation(0.054)
         self.drain()
         self.posture.request_delta(PostureAxis.PITCH, math.radians(2.0))
         self.drain()
@@ -274,7 +294,7 @@ class ThreeModeCoordinatorTest(unittest.TestCase):
     def test_posture_holds_and_exit_returns_to_stationary(self):
         self.enter_posture()
         self.assertTrue(
-            self.coordinator.request(Command.posture(PostureAxis.ELEVATION, 0.005))
+            self.coordinator.request(Command.elevation(0.055))
         )
         self.drain()
         self.assertEqual(self.coordinator.state, PostureState.POSTURE_HOLD)
@@ -292,7 +312,7 @@ class ThreeModeCoordinatorTest(unittest.TestCase):
 
     def test_mode_change_during_posture_command_finishes_then_returns(self):
         self.enter_posture()
-        self.coordinator.request(Command.posture(PostureAxis.ELEVATION, 0.005))
+        self.coordinator.request(Command.elevation(0.055))
         first = self.coordinator.next_batch()
         self.assertTrue(
             self.coordinator.request(Command.set_mode(ControllerMode.NORMAL))
@@ -329,7 +349,7 @@ class ThreeModeCoordinatorTest(unittest.TestCase):
 
     def test_reset_tilt_command_preserves_elevation(self):
         self.enter_posture()
-        self.coordinator.request(Command.posture(PostureAxis.ELEVATION, 0.005))
+        self.coordinator.request(Command.elevation(0.055))
         self.drain()
         self.coordinator.request(Command.posture(PostureAxis.PITCH, math.radians(2.0)))
         self.drain()
@@ -338,20 +358,20 @@ class ThreeModeCoordinatorTest(unittest.TestCase):
         self.drain()
 
         self.assertAlmostEqual(self.coordinator.posture.current_pose.pitch, 0.0)
-        self.assertAlmostEqual(self.coordinator.posture.current_pose.z, 0.005)
+        self.assertAlmostEqual(self.coordinator.posture.current_elevation, 0.055)
         self.assertEqual(self.coordinator.state, PostureState.POSTURE_HOLD)
 
     def test_first_stop_interrupts_at_boundary_and_second_returns_neutral(self):
         self.enter_posture()
-        self.coordinator.request(Command.posture(PostureAxis.ELEVATION, 0.020))
+        self.coordinator.request(Command.elevation(0.070))
         first = self.coordinator.next_batch()
         self.assertEqual(first.point_count, 25)
         self.assertTrue(self.coordinator.request(Command.stop()))
         self.coordinator.complete_batch(first.goal_id)
 
-        interrupted_z = self.coordinator.posture.current_pose.z
-        self.assertGreater(interrupted_z, 0.0)
-        self.assertLess(interrupted_z, 0.020)
+        interrupted_elevation = self.coordinator.posture.current_elevation
+        self.assertGreater(interrupted_elevation, 0.050)
+        self.assertLess(interrupted_elevation, 0.070)
         self.assertEqual(self.coordinator.state, PostureState.POSTURE_HOLD)
         self.assertIsNone(self.coordinator.next_batch())
 
@@ -375,7 +395,7 @@ class ThreeModeCoordinatorTest(unittest.TestCase):
             startup_ids.append(batch.goal_id)
             other.complete_batch(batch.goal_id)
         other.request(Command.set_mode(ControllerMode.POSTURE))
-        other.request(Command.posture(PostureAxis.ELEVATION, 0.001))
+        other.request(Command.elevation(0.051))
         posture = other.next_batch()
         self.assertGreater(posture.goal_id, max(startup_ids))
 
