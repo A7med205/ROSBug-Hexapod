@@ -22,6 +22,10 @@ hexapod_gait/
 │   ├── model.py                       geometry, frames, fixed-foot transforms, IK
 │   └── motion_batch.py                transport-neutral JointBatch and goal IDs
 ├── hardware/                          physical-robot-only code
+│   ├── firmware/
+│   │   ├── pico-v1.27.0-pimoroni-micropython.uf2
+│   │   │                                  bundled Servo 2040 MicroPython runtime
+│   │   └── servo2040_hard_reset.txt      BOOTSEL recovery and flashing procedure
 │   ├── board_interface.py             host keyboard and binary serial adapter
 │   ├── main.py                        Servo 2040 validation, calibration, playback
 │   ├── protocol.py                    shared host/MicroPython wire protocol
@@ -54,9 +58,8 @@ hexapod_gait/
 └── README.md
 ```
 
-The original repositories remain untouched. Their histories are preserved as
-`hardware-history` and `simulation-history`; `main` contains both histories as
-ancestors plus the shared implementation.
+The original repositories remain untouched. `main` contains both original
+histories as ancestors plus the shared implementation.
 
 ## Architecture
 
@@ -177,6 +180,28 @@ Install the host dependency and `mpremote` if it is not already available:
 python3 -m pip install -r requirements.txt
 python3 -m pip install mpremote
 ```
+
+The repository includes the Pimoroni MicroPython `v1.27.0` RP2040 runtime used
+by the Servo 2040:
+
+| Runtime property | Value |
+| --- | --- |
+| Bundled UF2 | `hardware/firmware/pico-v1.27.0-pimoroni-micropython.uf2` |
+| Target | Raspberry Pi RP2040 (`0xe48bff56`) |
+| Size | 1,300,992 bytes / 2,541 UF2 blocks |
+| SHA-256 | `5160050bef88dacd43496cd9fcfe14d3a8844d9d640a9a3131f65c5fd833a14c` |
+| Upstream release | [Pimoroni Pico MicroPython v1.27.0](https://github.com/pimoroni/pimoroni-pico/releases/tag/v1.27.0) |
+
+Normal updates only require copying `main.py` and `protocol.py`; do not reflash
+the UF2 for routine application changes. If the MicroPython runtime is missing
+or corrupt, follow
+[`hardware/firmware/servo2040_hard_reset.txt`](hardware/firmware/servo2040_hard_reset.txt).
+The recovery procedure enters the RP2040 BOOTSEL drive, requires verifying its
+`RPI-RP2` identity before mounting it, flashes the bundled UF2, and then
+restores the two application files. Pimoroni's
+[installation guide](https://github.com/pimoroni/pimoroni-pico/blob/main/setting-up-micropython.md)
+identifies the generic `pico-...-pimoroni-micropython.uf2` build for the
+Servo 2040 and other non-wireless RP2040 boards.
 
 Copy both MicroPython files to the Servo 2040. `main.py` imports `protocol.py`
 from the board filesystem:

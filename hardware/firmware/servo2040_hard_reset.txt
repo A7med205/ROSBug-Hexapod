@@ -1,0 +1,38 @@
+Servo 2040 MicroPython recovery / hard reset
+================================================
+
+Bundled runtime:
+  hardware/firmware/pico-v1.27.0-pimoroni-micropython.uf2
+
+WARNING: Flashing the UF2 replaces the board runtime. Back up any files that
+must be preserved, and use this procedure only when reinstalling or recovering
+the Servo 2040 MicroPython environment.
+
+1. Disconnect USB from the Servo 2040.
+2. Hold BOOTSEL while reconnecting USB, then release it. The RP2040 bootloader
+   should appear as a small removable volume named RPI-RP2.
+3. Identify the new partition; do not assume that it is /dev/sda1:
+
+     lsblk -o NAME,SIZE,RM,LABEL,MODEL,MOUNTPOINTS
+
+4. If the volume was auto-mounted, copy the UF2 to that mount point. Otherwise,
+   replace /dev/sdX1 below only after verifying that it is the RPI-RP2 volume:
+
+     sudo mkdir -p /mnt/rp2040
+     sudo mount -o rw /dev/sdX1 /mnt/rp2040
+     ls /mnt/rp2040
+
+   The directory must contain INFO_UF2.TXT before continuing.
+
+5. From the repository root, flash the bundled runtime:
+
+     sudo cp hardware/firmware/pico-v1.27.0-pimoroni-micropython.uf2 /mnt/rp2040/
+     sync
+
+6. The bootloader volume should disconnect automatically as the board reboots.
+   Reconnect normally if necessary, then restore the application files:
+
+     mpremote connect /dev/ttyACM0 cp hardware/protocol.py :protocol.py
+     mpremote connect /dev/ttyACM0 cp hardware/main.py :main.py
+
+7. Reset or reconnect the board and wait for READY 1.
