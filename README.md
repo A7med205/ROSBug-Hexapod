@@ -264,6 +264,32 @@ ros2 launch hexapod_sim robot.launch.py sim:=false rviz:=true use_sim_time:=fals
 Do not run `sim_interface.py` with the RViz-only variant unless another node
 provides the configured trajectory action server.
 
+### Docker simulation
+
+The Docker image uses `osrf/ros:humble-desktop-full`, copies the local checkout,
+installs the dependencies declared by `hexapod_sim`, and builds the ROS
+workspace. From the repository root, build and run Gazebo, RViz, and the
+interactive keyboard interface with:
+
+```bash
+./run_sim_docker.sh
+```
+
+The script forwards the host X11 display, host networking, the terminal, and
+`/dev/dri` when it is available. It rebuilds the image using Docker's layer
+cache before each run. The resulting desktop image is approximately 4 GB. To
+reuse an existing image or omit RViz:
+
+```bash
+./run_sim_docker.sh --no-build
+./run_sim_docker.sh --no-rviz
+```
+
+Run `./run_sim_docker.sh --help` for image-name and environment overrides.
+Closing the keyboard interface also stops the launch process and removes the
+container. The host must provide Docker, `xhost`, an X11-compatible `DISPLAY`,
+and access to the Docker daemon.
+
 ### Keyboard controls
 
 The controls are identical for hardware and simulation.
