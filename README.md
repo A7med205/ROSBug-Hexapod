@@ -3,7 +3,8 @@
 This repository runs the same transport-independent robot model, gait
 generator, posture generator, keyboard mapping, and mode coordinator against a
 physical Servo 2040 hexapod or a ROS 2 simulation. Only the final I/O adapter
-and actuator backend differ.
+and actuator backend differ. A ready-to-run Docker environment builds and
+launches the Gazebo/RViz simulation with the interactive keyboard interface.
 
 ## Layout
 
@@ -46,6 +47,7 @@ hexapod_gait/
 │                   ├── joint_control_macro.xacro
 │                   └── leg_macro.xacro         reusable leg/control definitions
 ├── docs/
+│   ├── controls.gif                     simulation keyboard-control demonstration
 │   └── gait_path_example.svg           generated-geometry documentation diagram
 ├── tests/                               core, protocol, and calibration regression tests
 ├── requirements.txt                    host Python dependency (`pyserial`)
@@ -313,6 +315,8 @@ The controls are identical for hardware and simulation.
 | Backspace | Delete the last numeric-prefix digit |
 | Escape | Clear the numeric prefix |
 | `x` | Quit after the current batch |
+
+![Simulation keyboard controls](docs/controls.gif)
 
 Posture commands require a numeric prefix and are not queued. `]` interprets
 that number as an objective elevation in millimetres; pitch and roll numbers
