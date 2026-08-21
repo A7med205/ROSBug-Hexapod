@@ -1,15 +1,32 @@
 # ROSBug Hexapod
 
-This repository runs the same transport-independent robot model, gait
-generator, posture generator, keyboard mapping, and mode coordinator against a
-physical Servo 2040 hexapod or a ROS 2 simulation. Only the final I/O adapter
-and actuator backend differ. A ready-to-run Docker environment builds and
-launches the Gazebo/RViz simulation with the interactive keyboard interface.
+ROSBug is an open-source, Raspberry Pi-based hexapod robot with an onboard
+camera. This repository provides its CAD and printable models, physical-robot
+hardware code, and a ROS 2 simulation package. The physical robot and
+simulation depend on the same transport-independent model, gait generator,
+posture generator, keyboard mapping, and mode coordinator; only their final
+I/O adapters and actuator backends differ. A ready-to-run Docker environment
+builds and launches the Gazebo/RViz simulation with the interactive keyboard
+interface.
 
 ## Layout
 
 ```text
 ROSBug-Hexapod/
+├── cad/
+│   └── stl/                          printable mechanical parts
+│       ├── base_.STL
+│       ├── bearing_holder+bearing_holder_2.STL
+│       ├── bearing_link.STL
+│       ├── cam_mount+cam_shield.STL
+│       ├── cover_2.STL
+│       ├── coxa_1.STL
+│       ├── coxa_2.STL
+│       ├── femur_1.STL
+│       ├── femur_2.STL
+│       ├── spacer.STL
+│       ├── tibia_1_.STL
+│       └── tibia_2_.STL
 ├── common/
 │   └── keyboard_input.py              shared nonblocking keyboard mapping
 ├── gait_core/
@@ -173,6 +190,7 @@ or ROS batch already executing runs to its next supported boundary.
 
 The editable mechanical model is available in the
 [ROSBug Hexapod Onshape document](https://cad.onshape.com/documents/2a9acbb79b23a0da46d8b498/w/10c7141c859961b97a14543a/e/498922900873c82099a5cf37).
+Print-ready meshes are included in [`cad/stl`](cad/stl).
 
 ![Complete ROSBug Hexapod CAD assembly](docs/full_cad.png)
 
@@ -285,6 +303,17 @@ For camera testing, see
 Run commands from the repository root unless a command changes directory.
 
 ### Hardware
+
+The hardware adapter runs on the robot's Raspberry Pi. SSH into the Pi before
+issuing the hardware setup, firmware-copy, or control commands in this section:
+
+```bash
+ssh <user>@<raspberry-pi-host>
+cd ROSBug-Hexapod
+```
+
+The following commands assume that the repository is present on the Pi and
+that the Servo 2040 is attached to it over USB.
 
 Install the host dependency and `mpremote` if it is not already available:
 
