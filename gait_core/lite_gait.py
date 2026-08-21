@@ -457,8 +457,8 @@ class LiteGaitCoordinator:
         self.config = config or GaitConfig()
         self.model = LiteGaitModel(self.config)
         self.state = ControllerState.AWAITING_STAND_UP
-        self.mode = ControllerMode.NORMAL
-        self.requested_mode = ControllerMode.NORMAL
+        self.mode = ControllerMode.AUTO
+        self.requested_mode = ControllerMode.AUTO
         self.requested_trajectory_id = 0
         self.active_trajectory_id = 0
         self.auto_job: Optional[AutoJob] = None

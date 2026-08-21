@@ -264,18 +264,16 @@ class ThreeModeCoordinatorTest(unittest.TestCase):
 
     def enter_posture(self):
         self.assertTrue(self.coordinator.request(Command.toggle_mode()))
-        self.assertEqual(self.coordinator.mode, ControllerMode.AUTO)
-        self.assertTrue(self.coordinator.request(Command.toggle_mode()))
         self.assertEqual(self.coordinator.mode, ControllerMode.POSTURE)
 
     def test_modes_cycle_normal_auto_posture_normal(self):
-        self.assertEqual(self.coordinator.mode, ControllerMode.NORMAL)
-        self.coordinator.request(Command.toggle_mode())
         self.assertEqual(self.coordinator.mode, ControllerMode.AUTO)
         self.coordinator.request(Command.toggle_mode())
         self.assertEqual(self.coordinator.mode, ControllerMode.POSTURE)
         self.coordinator.request(Command.toggle_mode())
         self.assertEqual(self.coordinator.mode, ControllerMode.NORMAL)
+        self.coordinator.request(Command.toggle_mode())
+        self.assertEqual(self.coordinator.mode, ControllerMode.AUTO)
 
     def test_sitdown_standup_cycle_preserves_posture_mode(self):
         self.enter_posture()
@@ -301,7 +299,6 @@ class ThreeModeCoordinatorTest(unittest.TestCase):
         self.assertTrue(self.coordinator.is_stationary)
 
     def test_sitdown_standup_cycle_preserves_auto_mode(self):
-        self.assertTrue(self.coordinator.request(Command.toggle_mode()))
         self.assertEqual(self.coordinator.mode, ControllerMode.AUTO)
         self.assertTrue(self.coordinator.request(Command.sit_down()))
 
@@ -351,6 +348,7 @@ class ThreeModeCoordinatorTest(unittest.TestCase):
         self.assertEqual(self.coordinator.mode, ControllerMode.NORMAL)
 
     def test_entering_posture_while_walking_stops_first(self):
+        self.coordinator.request(Command.set_mode(ControllerMode.NORMAL))
         self.coordinator.request(Command.walk(1))
         start = self.coordinator.next_batch()
         self.coordinator.request(Command.set_mode(ControllerMode.POSTURE))

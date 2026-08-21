@@ -36,6 +36,8 @@ ROSBug-Hexapod/
 ├── robot_core/
 │   ├── control.py                     commands and normal/auto/posture modes
 │   ├── coordinator.py                 shared motion arbitration
+│   ├── execution.py                   shared batch-executor result contract
+│   ├── feedback.py                    structured command/state feedback
 │   ├── model.py                       geometry, frames, fixed-foot transforms, IK
 │   └── motion_batch.py                transport-neutral JointBatch and goal IDs
 ├── hardware/                          physical-robot-only code
@@ -43,7 +45,8 @@ ROSBug-Hexapod/
 │   │   ├── pico-v1.27.0-pimoroni-micropython.uf2
 │   │   │                                  bundled Servo 2040 MicroPython runtime
 │   │   └── servo2040_hard_reset.txt      BOOTSEL recovery and flashing procedure
-│   ├── board_interface.py             host keyboard and binary serial adapter
+│   ├── batch_executor.py              reusable binary serial batch executor
+│   ├── board_interface.py             host keyboard frontend
 │   ├── main.py                        Servo 2040 validation, calibration, playback
 │   ├── protocol.py                    shared host/MicroPython wire protocol
 │   └── calibration.txt                readable copy of calibration constants
@@ -59,7 +62,8 @@ ROSBug-Hexapod/
 │           ├── rviz/
 │           │   └── config.rviz                 default RViz display configuration
 │           ├── scripts/
-│           │   └── sim_interface.py            shared-core ROS action adapter
+│           │   ├── sim_interface.py            host keyboard frontend
+│           │   └── simulation_batch_executor.py reusable ROS action executor
 │           └── urdf/
 │               ├── hexapod.urdf.xacro          robot, mounts, Gazebo integration
 │               └── xacro_include/
@@ -91,20 +95,23 @@ flowchart LR
     end
 
     KB[Keyboard] --> KI
-    BATCH --> HW[hardware.board_interface]
+    BATCH --> HW[BoardBatchExecutor]
     HW -->|versioned binary serial frame| BOARD[Servo 2040 main.py]
     BOARD -->|calibration + pulse conversion| SERVOS[18 physical servos]
     BOARD -->|ACK / DONE / ERR| HW
 
-    BATCH --> SIM[hexapod_sim sim_interface]
+    BATCH --> SIM[SimulationBatchExecutor]
     SIM -->|FollowJointTrajectory action| ROSCTRL[ROS 2 joint trajectory controller]
     ROSCTRL --> GZ[Gazebo Sim]
     GZ --> RVIZ[RViz / joint states]
 ```
 
-Both adapters instantiate the same `HexapodCoordinator` and receive the same
-joint values, phase boundaries, sample period, and goal IDs. There is no ROS
-command topic: both adapters read the terminal directly.
+The keyboard frontends instantiate the same `HexapodCoordinator` and pass its
+batches to interchangeable executors. `BoardBatchExecutor` and
+`SimulationBatchExecutor` return the same structured `BatchExecutionResult`,
+so non-keyboard command sources can reuse either transport without parsing
+console output. There is no ROS command topic: the included simulation
+frontend still reads the terminal directly.
 
 | Concern | Hardware | Simulation |
 | --- | --- | --- |
@@ -153,6 +160,8 @@ the first sample that reaches the limit.
 
 ### Modes and state behavior
 
+- The coordinator starts in `auto` mode. Standup readiness is still explicit;
+  counted motion remains rejected until standup or the skip assertion completes.
 - `normal` accepts bare movement keys as continuous commands. A new movement
   direction is latched and applied at the next full-step midpoint.
 - `auto` only accepts a movement command with an integer step count of at least
@@ -180,6 +189,13 @@ the first sample that reaches the limit.
 
 There is no emergency-stop protocol. `0` is a coordinated stop, and a serial
 or ROS batch already executing runs to its next supported boundary.
+
+`request_with_feedback()` supplements the compatibility `request()` boolean
+with a code, detail, and coordinator operation ID. `status()` exposes current
+mode, state, pending goal, and auto progress, while `drain_events()` reports
+accepted, rejected, batch-completed, operation-completed, replaced, and failed
+events. These values are transport-neutral; frontends decide whether to print,
+publish, or test them.
 
 ## CAD
 
@@ -467,7 +483,7 @@ The controls are identical for hardware and simulation.
 | `k` | Skip standup and assert that the robot is already standing |
 | `j` | Sit down from stationary and restore the standup lock |
 | `0` | Graceful gait stop; in posture, interrupt and then return neutral |
-| `t` | Cycle normal → auto → posture → normal |
+| `t` | Cycle auto → posture → normal → auto (auto is the default) |
 | `w`, `d`, `s`, `a` | Move `+Y`, `+X`, `-Y`, `-X` |
 | `q`, `e`, `z`, `c` | Diagonal motion, or orbit motion after pressing `m` |
 | `m` | Toggle the `q/e/z/c` mapping between diagonal and orbit |
@@ -712,7 +728,8 @@ source /opt/ros/humble/setup.bash
 colcon build --symlink-install --packages-select hexapod_sim
 ```
 
-The tests cover standup/sitdown readiness locking, exact executable template
+The tests cover the default auto mode, structured command and execution
+feedback, standup/sitdown readiness locking, exact executable template
 sizes, equal leg sequence lengths, future-only boundary points, sub-degree
 sample propagation, normal/auto/posture transitions, counted and aborted gait
 jobs, midpoint direction latching, objective elevation targeting, pitch/roll

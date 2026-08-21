@@ -21,6 +21,7 @@ endif()
 install(
   PROGRAMS
     scripts/sim_interface.py
+    scripts/simulation_batch_executor.py
   DESTINATION
     lib/${PROJECT_NAME}
 )

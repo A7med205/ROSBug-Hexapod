@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from collections import deque
+from typing import Deque, Optional
 
 from gait_core.lite_gait import (
     ControllerState,
@@ -12,6 +13,12 @@ from gait_core.lite_gait import (
 from posture_core import PostureConfig, PostureCoordinator
 from robot_core.control import Command, CommandKind, ControllerMode, PostureAxis
 from robot_core.motion_batch import GoalIdAllocator, JointBatch
+from robot_core.feedback import (
+    CommandFeedback,
+    CoordinatorEvent,
+    CoordinatorEventKind,
+    CoordinatorStatus,
+)
 
 
 class HexapodCoordinator:
@@ -25,9 +32,13 @@ class HexapodCoordinator:
         goal_ids = GoalIdAllocator()
         self.gait = LiteGaitCoordinator(gait_config, goal_ids)
         self.posture = PostureCoordinator(self.gait.model, posture_config, goal_ids)
-        self.mode = ControllerMode.NORMAL
-        self.requested_mode = ControllerMode.NORMAL
+        self.mode = ControllerMode.AUTO
+        self.requested_mode = ControllerMode.AUTO
         self._pending_owner: Optional[str] = None
+        self._next_operation_id = 1
+        self._operation_id: Optional[int] = None
+        self._operation_command: Optional[Command] = None
+        self._events: Deque[CoordinatorEvent] = deque()
 
     @property
     def model(self):
@@ -86,6 +97,30 @@ class HexapodCoordinator:
     def last_posture_result(self):
         return self.posture.last_plan_result
 
+    def status(self) -> CoordinatorStatus:
+        """Return a transport-neutral snapshot for UIs and remote adapters."""
+        pending = self.pending_batch
+        auto = self.auto_job
+        return CoordinatorStatus(
+            state=self.state,
+            mode=self.mode,
+            requested_mode=self.requested_mode,
+            operation_id=self._operation_id,
+            command_kind=(
+                self._operation_command.kind if self._operation_command else None
+            ),
+            pending_goal_id=pending.goal_id if pending else None,
+            auto_requested_steps=auto.requested_steps if auto else None,
+            auto_completed_half_steps=auto.completed_half_steps if auto else None,
+            auto_remaining_half_steps=auto.remaining_half_steps if auto else None,
+        )
+
+    def drain_events(self):
+        """Return and clear structured events accumulated since the last drain."""
+        events = tuple(self._events)
+        self._events.clear()
+        return events
+
     def _ready_for_modes(self) -> bool:
         return self.gait.state not in (
             ControllerState.AWAITING_STAND_UP,
@@ -139,7 +174,7 @@ class HexapodCoordinator:
         self._activate_requested_mode_if_ready()
         return True
 
-    def request(self, command: Command) -> bool:
+    def _request(self, command: Command) -> bool:
         if command.kind == CommandKind.TOGGLE_MODE:
             return self._request_mode(ControllerMode.next(self.requested_mode))
         if command.kind == CommandKind.SET_MODE:
@@ -198,6 +233,63 @@ class HexapodCoordinator:
             return self.gait.request(command)
         return False
 
+    def request_with_feedback(self, command: Command) -> CommandFeedback:
+        """Request a command and return a structured acceptance result."""
+        accepted = self._request(command)
+        if not accepted:
+            detail = (
+                f"{command.kind} rejected in state={self.state}, "
+                f"mode={self.mode}, requested_mode={self.requested_mode}"
+            )
+            feedback = CommandFeedback(False, "command_rejected", detail)
+            self._events.append(
+                CoordinatorEvent(
+                    CoordinatorEventKind.COMMAND_REJECTED,
+                    None,
+                    command.kind,
+                    self.state,
+                    self.mode,
+                    detail,
+                )
+            )
+            return feedback
+
+        if self._operation_id is not None:
+            self._events.append(
+                CoordinatorEvent(
+                    CoordinatorEventKind.OPERATION_REPLACED,
+                    self._operation_id,
+                    self._operation_command.kind if self._operation_command else None,
+                    self.state,
+                    self.mode,
+                    f"replaced by {command.kind}",
+                )
+            )
+        operation_id = self._next_operation_id
+        self._next_operation_id += 1
+        self._operation_id = operation_id
+        self._operation_command = command
+        detail = (
+            f"{command.kind} accepted in state={self.state}, "
+            f"mode={self.mode}, requested_mode={self.requested_mode}"
+        )
+        self._events.append(
+            CoordinatorEvent(
+                CoordinatorEventKind.COMMAND_ACCEPTED,
+                operation_id,
+                command.kind,
+                self.state,
+                self.mode,
+                detail,
+            )
+        )
+        self._finish_operation_if_ready()
+        return CommandFeedback(True, "accepted", detail, operation_id)
+
+    def request(self, command: Command) -> bool:
+        """Backward-compatible boolean command request."""
+        return self.request_with_feedback(command).accepted
+
     def next_batch(self) -> Optional[JointBatch]:
         if self._pending_owner is not None:
             return None
@@ -210,20 +302,26 @@ class HexapodCoordinator:
             batch = self.gait.next_batch()
             if batch is not None:
                 self._pending_owner = "gait"
+            if batch is None:
+                self._finish_operation_if_ready()
             return batch
 
         if self.mode == ControllerMode.POSTURE:
             batch = self.posture.next_batch()
             if batch is not None:
                 self._pending_owner = "posture"
+            if batch is None:
+                self._finish_operation_if_ready()
             return batch
 
         batch = self.gait.next_batch()
         if batch is not None:
             self._pending_owner = "gait"
+        if batch is None:
+            self._finish_operation_if_ready()
         return batch
 
-    def complete_batch(self, goal_id: int, succeeded: bool = True) -> None:
+    def complete_batch(self, goal_id: int, succeeded: bool = True):
         owner = self._pending_owner
         if owner is None:
             raise ValueError(f"goal {goal_id} is not the pending batch")
@@ -238,3 +336,60 @@ class HexapodCoordinator:
             raise RuntimeError(f"unknown pending owner: {owner}")
         if succeeded:
             self._activate_requested_mode_if_ready()
+            event = CoordinatorEvent(
+                CoordinatorEventKind.BATCH_COMPLETED,
+                self._operation_id,
+                self._operation_command.kind if self._operation_command else None,
+                self.state,
+                self.mode,
+                f"goal {goal_id} completed",
+            )
+            self._events.append(event)
+            self._finish_operation_if_ready()
+            return event
+        event = CoordinatorEvent(
+            CoordinatorEventKind.OPERATION_FAILED,
+            self._operation_id,
+            self._operation_command.kind if self._operation_command else None,
+            self.state,
+            self.mode,
+            f"goal {goal_id} failed",
+        )
+        self._events.append(event)
+        self._operation_id = None
+        self._operation_command = None
+        return event
+
+    def _operation_has_work(self) -> bool:
+        command = self._operation_command
+        if command is None or self.pending_batch is not None:
+            return self.pending_batch is not None
+        if command.kind == CommandKind.WALK:
+            return self.auto_job is not None or not self.gait.is_stationary
+        if command.kind == CommandKind.STAND_UP:
+            return self.gait.state == ControllerState.STANDING_UP
+        if command.kind == CommandKind.SIT_DOWN:
+            return self.gait.state == ControllerState.SITTING_DOWN
+        if command.kind in (CommandKind.POSTURE, CommandKind.RESET_TILT):
+            return self.posture.is_busy
+        if command.kind in (CommandKind.SET_MODE, CommandKind.TOGGLE_MODE):
+            return self.mode != self.requested_mode or not self.is_idle
+        if command.kind == CommandKind.STOP:
+            return not self.is_stationary
+        return False
+
+    def _finish_operation_if_ready(self) -> None:
+        if self._operation_id is None or self._operation_has_work():
+            return
+        self._events.append(
+            CoordinatorEvent(
+                CoordinatorEventKind.OPERATION_COMPLETED,
+                self._operation_id,
+                self._operation_command.kind if self._operation_command else None,
+                self.state,
+                self.mode,
+                "operation completed",
+            )
+        )
+        self._operation_id = None
+        self._operation_command = None
