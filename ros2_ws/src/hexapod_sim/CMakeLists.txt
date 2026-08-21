@@ -21,8 +21,6 @@ endif()
 install(
   PROGRAMS
     scripts/sim_interface.py
-    scripts/base_pose_manipulator.py
-    scripts/elevation_pitch_keyboard.py
   DESTINATION
     lib/${PROJECT_NAME}
 )

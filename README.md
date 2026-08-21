@@ -59,9 +59,7 @@ ROSBug-Hexapod/
 │           ├── rviz/
 │           │   └── config.rviz                 default RViz display configuration
 │           ├── scripts/
-│           │   ├── sim_interface.py            shared-core ROS action adapter
-│           │   ├── base_pose_manipulator.py    legacy direct pose utility
-│           │   └── elevation_pitch_keyboard.py legacy posture utility
+│           │   └── sim_interface.py            shared-core ROS action adapter
 │           └── urdf/
 │               ├── hexapod.urdf.xacro          robot, mounts, Gazebo integration
 │               └── xacro_include/
