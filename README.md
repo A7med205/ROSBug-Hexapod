@@ -76,9 +76,6 @@ ROSBug-Hexapod/
 └── README.md
 ```
 
-The original repositories remain untouched. `main` contains both original
-histories as ancestors plus the shared implementation.
-
 ## Architecture
 
 ### Communication
@@ -226,14 +223,11 @@ graph LR
 
 ### Bill of materials
 
-This BOM is derived from `BOM_H.xlsx` and `BOM_EXTRA.xlsx`. Amazon Marketplace
-ASINs and sellers change frequently, so Amazon links deliberately open a live
-Amazon UK search for the required specification. Reference prices were
-refreshed on 21 August 2026, include the quantity shown, and are only budgeting
-figures; check the selected listing's electrical specification, pack size,
-delivery cost, and current price before ordering. The original non-Amazon
-Servo 2040 source is retained. Items that had no source in the spreadsheets
-remain unlinked.
+Amazon Marketplace ASINs and sellers change frequently, so Amazon links open a
+live Amazon UK search for the required specification. Reference prices were
+checked on 21 August 2026, include the quantity shown, and are budgeting
+figures only. Check the selected listing's electrical specification, pack
+size, delivery cost, and current price before ordering.
 
 #### Electronics and mechanical parts
 
@@ -250,6 +244,10 @@ remain unlinked.
 | MG996R-compatible metal servo horn | 18 | [Amazon UK](https://www.amazon.co.uk/s?k=MG996R+metal+servo+horn+25T) | £18.99 |
 | 628-2Z deep-groove bearing | 18 | [Amazon UK](https://www.amazon.co.uk/s?k=628-2Z+bearing) | £13.99 |
 | 7 mm rubber tip | 6 | [Amazon UK](https://www.amazon.co.uk/s?k=7mm+rubber+end+caps) | £5.99 |
+| **Priced parts total** | | | **£270.39** |
+
+The total excludes printed parts, filament, unpriced fasteners, delivery, and
+any price changes after the reference date.
 
 #### Printed parts
 
@@ -292,6 +290,9 @@ remain unlinked.
 | Micro-USB power cable | 3 | [Amazon UK](https://www.amazon.co.uk/s?k=Micro+USB+power+cable) | £8.99 |
 | 2–8S LiPo voltage alarm | 3 | [Amazon UK](https://www.amazon.co.uk/s?k=2-8S+LiPo+voltage+alarm) | £7.49 |
 | Temperature-controlled soldering-iron kit | 1 | [Amazon UK](https://www.amazon.co.uk/s?k=temperature+controlled+soldering+iron+kit) | £15.99 |
+| **Tools and materials total** | | | **£162.33** |
+
+The total excludes delivery and any price changes after the reference date.
 
 ## Camera testing
 
