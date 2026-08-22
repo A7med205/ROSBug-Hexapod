@@ -84,7 +84,7 @@ class _PendingPostureBatch:
 
 
 class PostureCoordinator:
-    """Plan absolute elevation and relative tilt commands from confirmed state."""
+    """Plan bounded elevation and relative tilt from confirmed state."""
 
     def __init__(
         self,
@@ -434,6 +434,26 @@ class PostureCoordinator:
         if self._job is not None:
             self.state = PostureState.MOVING
         return True
+
+    def request_elevation_delta(self, delta: float) -> bool:
+        """Move by a relative elevation delta while retaining absolute limits."""
+
+        if isinstance(delta, bool) or not isinstance(delta, (int, float)):
+            return False
+        delta = float(delta)
+        if not math.isfinite(delta) or self.is_busy or self._return_requested:
+            return False
+
+        start_elevation = self.current_elevation
+        accepted = self.request_elevation(start_elevation + delta)
+        if accepted and self.last_plan_result is not None:
+            applied_delta = self.last_plan_result.applied_value - start_elevation
+            self.last_plan_result = PosturePlanResult(
+                PostureAxis.ELEVATION,
+                delta,
+                applied_delta,
+            )
+        return accepted
 
     def request_tilt_reset(self) -> bool:
         """Smoothly zero the active tilt axis while preserving elevation."""

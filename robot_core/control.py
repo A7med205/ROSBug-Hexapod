@@ -82,7 +82,7 @@ class Command:
     @classmethod
     def posture(cls, axis: str, delta: float) -> "Command":
         if axis == PostureAxis.ELEVATION:
-            raise ValueError("use Command.elevation() for an objective elevation")
+            raise ValueError("use Command.elevation() for a relative elevation")
         return cls(
             CommandKind.POSTURE,
             posture_axis=axis,
@@ -90,11 +90,12 @@ class Command:
         )
 
     @classmethod
-    def elevation(cls, target: float) -> "Command":
+    def elevation(cls, delta: float) -> "Command":
+        """Request a relative body-elevation change in metres."""
         return cls(
             CommandKind.POSTURE,
             posture_axis=PostureAxis.ELEVATION,
-            posture_value=target,
+            posture_value=delta,
         )
 
     @classmethod

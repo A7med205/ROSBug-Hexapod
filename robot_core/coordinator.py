@@ -211,7 +211,7 @@ class HexapodCoordinator:
             ):
                 return False
             if command.posture_axis == PostureAxis.ELEVATION:
-                return self.posture.request_elevation(command.posture_value)
+                return self.posture.request_elevation_delta(command.posture_value)
             return self.posture.request_delta(
                 command.posture_axis,
                 command.posture_value,

@@ -290,7 +290,7 @@ class ThreeModeCoordinatorTest(unittest.TestCase):
         self.assertEqual(self.coordinator.mode, ControllerMode.POSTURE)
         self.assertEqual(self.coordinator.requested_mode, ControllerMode.POSTURE)
         self.assertFalse(self.coordinator.request(Command.toggle_mode()))
-        self.assertFalse(self.coordinator.request(Command.elevation(0.060)))
+        self.assertFalse(self.coordinator.request(Command.elevation(0.010)))
         self.assertTrue(self.coordinator.request(Command.stand_up()))
         names = [batch.phase_name for batch in self.drain()]
         self.assertEqual(names, ["standup pose", "standup descent"])
@@ -316,7 +316,7 @@ class ThreeModeCoordinatorTest(unittest.TestCase):
     def test_posture_holds_and_exit_returns_to_stationary(self):
         self.enter_posture()
         self.assertTrue(
-            self.coordinator.request(Command.elevation(0.055))
+            self.coordinator.request(Command.elevation(0.005))
         )
         self.drain()
         self.assertEqual(self.coordinator.state, PostureState.POSTURE_HOLD)
@@ -332,9 +332,28 @@ class ThreeModeCoordinatorTest(unittest.TestCase):
         self.assertEqual(self.coordinator.state, ControllerState.STATIONARY)
         self.assertTrue(self.coordinator.is_stationary)
 
+    def test_relative_elevation_accumulates_within_existing_limits(self):
+        self.enter_posture()
+
+        for delta, expected in (
+            (0.005, 0.055),
+            (0.005, 0.060),
+            (1.000, 0.150),
+            (-1.000, 0.025),
+        ):
+            with self.subTest(delta=delta):
+                self.assertTrue(
+                    self.coordinator.request(Command.elevation(delta))
+                )
+                self.drain()
+                self.assertAlmostEqual(
+                    self.coordinator.posture.current_elevation,
+                    expected,
+                )
+
     def test_mode_change_during_posture_command_finishes_then_returns(self):
         self.enter_posture()
-        self.coordinator.request(Command.elevation(0.055))
+        self.coordinator.request(Command.elevation(0.005))
         first = self.coordinator.next_batch()
         self.assertTrue(
             self.coordinator.request(Command.set_mode(ControllerMode.NORMAL))
@@ -372,7 +391,7 @@ class ThreeModeCoordinatorTest(unittest.TestCase):
 
     def test_reset_tilt_command_preserves_elevation(self):
         self.enter_posture()
-        self.coordinator.request(Command.elevation(0.055))
+        self.coordinator.request(Command.elevation(0.005))
         self.drain()
         self.coordinator.request(Command.posture(PostureAxis.PITCH, math.radians(2.0)))
         self.drain()
@@ -386,7 +405,7 @@ class ThreeModeCoordinatorTest(unittest.TestCase):
 
     def test_first_stop_interrupts_at_boundary_and_second_returns_neutral(self):
         self.enter_posture()
-        self.coordinator.request(Command.elevation(0.070))
+        self.coordinator.request(Command.elevation(0.020))
         first = self.coordinator.next_batch()
         self.assertEqual(first.point_count, 25)
         self.assertTrue(self.coordinator.request(Command.stop()))
@@ -418,7 +437,7 @@ class ThreeModeCoordinatorTest(unittest.TestCase):
             standup_ids.append(batch.goal_id)
             other.complete_batch(batch.goal_id)
         other.request(Command.set_mode(ControllerMode.POSTURE))
-        other.request(Command.elevation(0.051))
+        other.request(Command.elevation(0.001))
         posture = other.next_batch()
         self.assertGreater(posture.goal_id, max(standup_ids))
 

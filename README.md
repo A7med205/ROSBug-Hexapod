@@ -169,8 +169,8 @@ the first sample that reaches the limit.
   half-step`. The two boundary halves contribute one combined step. Auto jobs
   start and end stationary, ignore other movement commands, and are aborted by
   `0` through the normal final-half path.
-- `posture` starts from canonical stationary and accepts an objective elevation
-  target or relative pitch and roll changes. Elevation can coexist with either
+- `posture` starts from canonical stationary and accepts relative elevation,
+  pitch, and roll changes. Elevation can coexist with either
   tilt. Pitch and roll cannot coexist; reset the active tilt before selecting
   the other axis.
   Completed non-neutral commands enter `POSTURE_HOLD`, so another posture
@@ -489,7 +489,7 @@ The controls are identical for hardware and simulation.
 | `m` | Toggle the `q/e/z/c` mapping between diagonal and orbit |
 | `o`, `p` | Rotate counterclockwise / clockwise |
 | `5w` | Example auto command: move `+Y` for five counted steps |
-| `100]` | Move to an objective elevation of 100 mm in posture mode |
+| `5[` / `5]` | Lower / raise the body by 5 mm in posture mode |
 | `5.`, `5,` | Add / subtract 5° pitch in posture mode |
 | `5'`, `5;` | Add / subtract 5° roll in posture mode |
 | `r` | Reset pitch or roll to zero while preserving elevation |
@@ -499,9 +499,10 @@ The controls are identical for hardware and simulation.
 
 ![Simulation keyboard controls](docs/controls.gif)
 
-Posture commands require a numeric prefix and are not queued. `]` interprets
-that number as an objective elevation in millimetres; pitch and roll numbers
-remain relative degree changes from the confirmed pose. During an active
+Posture commands require a numeric prefix and are not queued. `[` and `]`
+lower and raise elevation by the prefixed number of millimetres; pitch and roll
+numbers are relative degree changes from the confirmed pose. Every elevation
+change is clamped to the same 25–150 mm objective-height envelope. During an active
 posture command, the first `0` discards remaining points after the current
 25-point boundary and enters `POSTURE_HOLD`; a second `0` from that hold
 returns to the stationary objective elevation and zero tilt. `r` uses the same
@@ -609,7 +610,7 @@ Objective elevation is derived directly from the kinematic model. The
 stationary value is `-home_z`; changing `home_z` therefore changes the
 stationary posture target automatically without moving or reinterpreting the
 fixed 25–150 mm operating envelope. Internally, the fixed-foot transform uses
-the difference between the commanded objective elevation and `-home_z`.
+the difference between the resulting objective elevation and `-home_z`.
 
 The measured angular envelope is linearly interpolated between objective
 elevation knots. The scaled values are the limits actually applied by the
@@ -732,7 +733,7 @@ The tests cover the default auto mode, structured command and execution
 feedback, standup/sitdown readiness locking, exact executable template
 sizes, equal leg sequence lengths, future-only boundary points, sub-degree
 sample propagation, normal/auto/posture transitions, counted and aborted gait
-jobs, midpoint direction latching, objective elevation targeting, pitch/roll
+jobs, midpoint direction latching, relative elevation changes, pitch/roll
 exclusion, smoothed profile limits, posture interruption boundaries,
 IK/envelope clamping, protocol validation and idempotence, finite joint values,
 and calibrated pulse regression.
