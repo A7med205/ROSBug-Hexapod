@@ -37,7 +37,7 @@ def _describe_command(command) -> str:
         return "sit down and restore standup lock"
     if command.kind == CommandKind.POSTURE:
         if command.posture_axis == PostureAxis.ELEVATION:
-            return f"objective elevation {command.posture_value * 1000.0:.1f} mm"
+            return f"elevation change {command.posture_value * 1000.0:+.1f} mm"
         return (
             f"{command.posture_axis} "
             f"{math.degrees(command.posture_value):+.1f} deg"

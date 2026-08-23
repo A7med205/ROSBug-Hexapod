@@ -9,6 +9,11 @@ try:
 except ImportError:  # CPython
     import struct
 
+try:
+    from binascii import crc32 as _native_crc32
+except ImportError:  # Older MicroPython builds expose the module as ubinascii.
+    from ubinascii import crc32 as _native_crc32
+
 
 MAGIC = b"HXGB"
 PROTOCOL_VERSION = 1
@@ -35,15 +40,9 @@ class ProtocolError(Exception):
 
 
 def crc32(data):
-    """Small table-free CRC-32 implementation usable on MicroPython."""
+    """Return an unsigned CRC-32 using the runtime's native implementation."""
 
-    crc = 0xFFFFFFFF
-    for value in data:
-        crc ^= value
-        for _ in range(8):
-            mask = -(crc & 1) & 0xFFFFFFFF
-            crc = ((crc >> 1) ^ (0xEDB88320 & mask)) & 0xFFFFFFFF
-    return crc ^ 0xFFFFFFFF
+    return _native_crc32(data) & 0xFFFFFFFF
 
 
 def pack_header(session_id, goal_id, point_count, sample_period_us, payload_length):

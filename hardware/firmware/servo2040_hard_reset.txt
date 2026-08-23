@@ -1,38 +1,85 @@
 Servo 2040 MicroPython recovery / hard reset
 ================================================
 
+Bundled erase image:
+  hardware/firmware/nuke_universal.uf2
+  SHA-256: f1d80fcc37161df8cbdf16a58c111208f06234976a470c17699270d212e91754
+  Source: Raspberry Pi pico-sdk-prebuilts nuke_universal.uf2
+
 Bundled runtime:
   hardware/firmware/pico-v1.27.0-pimoroni-micropython.uf2
+  SHA-256: 5160050bef88dacd43496cd9fcfe14d3a8844d9d640a9a3131f65c5fd833a14c
 
-WARNING: Flashing the UF2 replaces the board runtime. Back up any files that
-must be preserved, and use this procedure only when reinstalling or recovering
-the Servo 2040 MicroPython environment.
+WARNING: This procedure erases the entire external flash, including the board
+runtime and MicroPython filesystem. Back up every file that must be preserved.
+Disconnect external servo power and mechanically support the robot before
+continuing; leave only the USB connection used for recovery.
 
-1. Disconnect USB from the Servo 2040.
-2. Hold BOOTSEL while reconnecting USB, then release it. The RP2040 bootloader
-   should appear as a small removable volume named RPI-RP2.
-3. Identify the new partition; do not assume that it is /dev/sda1:
+1. Enter the RP2040 BOOTSEL bootloader using the reliable full-power sequence:
+
+   a. Stop programs using /dev/ttyACM0.
+   b. Disconnect USB and all external power from the Servo 2040.
+   c. Wait five seconds.
+   d. Press and hold the button labelled BOOT/USR.
+   e. While continuing to hold BOOT/USR, reconnect USB.
+   f. Keep holding BOOT/USR for 5-10 seconds, then release it.
+
+   The board should enumerate as USB ID 2e8a:0003 and expose a small removable
+   volume named RPI-RP2. USB ID 2e8a:0005 means normal MicroPython started and
+   the BOOTSEL sequence must be repeated.
+
+     lsusb -d 2e8a:
+
+2. Identify the new partition; do not assume that it is /dev/sda1:
 
      lsblk -o NAME,SIZE,RM,LABEL,MODEL,MOUNTPOINTS
 
-4. If the volume was auto-mounted, copy the UF2 to that mount point. Otherwise,
-   replace /dev/sdX1 below only after verifying that it is the RPI-RP2 volume:
+3. If RPI-RP2 was auto-mounted, use the mount point reported by lsblk in every
+   copy command below. Otherwise, replace /dev/sdX1 only after verifying that
+   it is the 128 MB removable RPI-RP2 partition, then mount it:
 
      sudo mkdir -p /mnt/rp2040
      sudo mount -o rw /dev/sdX1 /mnt/rp2040
      ls /mnt/rp2040
 
-   The directory must contain INFO_UF2.TXT before continuing.
+   Do not continue unless the selected directory contains INFO_UF2.TXT.
 
-5. From the repository root, flash the bundled runtime:
+4. From the repository root, copy the bundled erase image to the verified
+   RPI-RP2 mount point:
 
+     sudo cp hardware/firmware/nuke_universal.uf2 /mnt/rp2040/
+     sync
+
+   The volume should disconnect while the erase image runs. Wait at least ten
+   seconds. The blank board normally returns to BOOTSEL; if it does not, repeat
+   step 1. The old mount is invalid after the disconnect, and /mnt/rp2040 may
+   now be only an empty ordinary directory. Identify the new RPI-RP2 partition
+   again; its device name may change, for example from /dev/sda1 to /dev/sdb1:
+
+     lsusb -d 2e8a:
+     lsblk -o NAME,SIZE,RM,LABEL,MODEL,MOUNTPOINTS
+     mountpoint /mnt/rp2040
+
+   If the new RPI-RP2 partition is not auto-mounted, mount its newly verified
+   device name before continuing. For example, if lsblk now reports /dev/sdb1:
+
+     sudo mount -o rw /dev/sdb1 /mnt/rp2040
+
+5. Verify INFO_UF2.TXT again, then flash the bundled Pimoroni MicroPython
+   runtime:
+
+     ls /mnt/rp2040
      sudo cp hardware/firmware/pico-v1.27.0-pimoroni-micropython.uf2 /mnt/rp2040/
      sync
 
-6. The bootloader volume should disconnect automatically as the board reboots.
-   Reconnect normally if necessary, then restore the application files:
+   The bootloader volume should disconnect automatically as MicroPython boots.
 
+6. Wait for the serial device to appear, then restore protocol.py before
+   main.py because main.py imports it at startup:
+
+     ls -l /dev/ttyACM*
      mpremote connect /dev/ttyACM0 cp hardware/protocol.py :protocol.py
      mpremote connect /dev/ttyACM0 cp hardware/main.py :main.py
 
-7. Reset or reconnect the board and wait for READY 1.
+7. Reset or reconnect the board normally. The application intentionally waits
+   five seconds during startup; wait for READY 1 before sending a batch.

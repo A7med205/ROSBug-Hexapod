@@ -466,7 +466,7 @@ The controls are identical for hardware and simulation.
 Posture commands require a numeric prefix. `[` and `]`
 lower and raise elevation by the prefixed number of millimetres; pitch and roll
 numbers are relative degree changes from the confirmed pose. Every elevation
-change is clamped to the same 25–150 mm objective-height envelope. During an active
+change is clamped to the 31.25–125 mm scaled objective-height envelope. During an active
 posture command, the first `0` discards remaining points after the current
 25-point boundary and enters `POSTURE_HOLD`; a second `0` from that hold
 returns to the stationary objective elevation and zero tilt. `r` zeros the active
@@ -554,23 +554,26 @@ Posture trajectories use a 20 ms cubic smoothstep profile.
 | Pitch/roll maximum velocity | 10°/s |
 | Pitch/roll maximum acceleration | 40°/s² |
 | Maximum batch | 25 points / 0.5 s |
-| Operating angular-limit scale | 0.9 |
-| Minimum objective elevation | 25 mm |
+| Operating elevation/angular-limit scale | 0.75 |
+| Raw objective elevation knots | 25, 50, 100, 130, 150 mm |
+| Minimum operating objective elevation | 31.25 mm |
 | Stationary objective elevation `-home_z` | 50 mm |
-| Maximum objective elevation | 150 mm |
+| Maximum operating objective elevation | 125 mm |
 | IK boundary-search iterations | 52 |
 | Neutral tolerance | `1e-9` |
 
 Objective elevation is derived directly from the kinematic model. The
-stationary value is `-home_z`. Tilt limits are applied based on elevation.
+stationary value is `-home_z`. The operating scale contracts every raw
+elevation knot toward that stationary objective and scales its pitch/roll
+limit by the same factor.
 
-| Objective elevation | Raw roll | Applied roll | Raw pitch | Applied pitch |
+| Operating objective elevation | Raw roll | Applied roll | Raw pitch | Applied pitch |
 | ---: | ---: | ---: | ---: | ---: |
-| 25 mm | 0° | 0° | 0° | 0° |
-| 50 mm | 12° | 10.8° | 12° | 10.8° |
-| 100 mm | 20° | 18° | 25° | 22.5° |
-| 130 mm | 10° | 9° | 12° | 10.8° |
-| 150 mm | 0° | 0° | 0° | 0° |
+| 31.25 mm | 0° | 0° | 0° | 0° |
+| 50 mm | 12° | 9° | 12° | 9° |
+| 87.5 mm | 20° | 15° | 25° | 18.75° |
+| 110 mm | 10° | 7.5° | 12° | 9° |
+| 125 mm | 0° | 0° | 0° | 0° |
 
 ### Hardware protocol and playback
 

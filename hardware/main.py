@@ -7,6 +7,11 @@ import sys
 import time
 
 try:
+    import micropython
+except ImportError:  # Allows this module to be imported by CPython tests.
+    micropython = None
+
+try:
     import ustruct as struct
 except ImportError:
     import struct
@@ -294,6 +299,11 @@ class GoalReceiver:
 
 
 def main():
+    # USB serial is also MicroPython's REPL input.  Its default Ctrl-C handler
+    # treats any 0x03 in a binary frame as a KeyboardInterrupt, so disable that
+    # handler before the host can queue a frame during the startup delay.
+    if micropython is not None:
+        micropython.kbd_intr(-1)
     time.sleep(5.0)
     GoalReceiver().run()
 

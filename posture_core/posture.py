@@ -29,8 +29,8 @@ class PostureConfig:
     angular_velocity: float = math.radians(10.0)
     elevation_acceleration: float = 0.050
     angular_acceleration: float = math.radians(40.0)
-    # Objective body elevations above the stance-tip plane. The stationary
-    # objective is derived from the model as -home_z.
+    # Raw objective body elevations above the stance-tip plane. The operating
+    # scale contracts these knots around the stationary objective (-home_z).
     elevation_knots: Tuple[float, ...] = (0.025, 0.050, 0.100, 0.130, 0.150)
     roll_limit_knots: Tuple[float, ...] = tuple(
         math.radians(value) for value in (0.0, 12.0, 20.0, 10.0, 0.0)
@@ -38,7 +38,7 @@ class PostureConfig:
     pitch_limit_knots: Tuple[float, ...] = tuple(
         math.radians(value) for value in (0.0, 12.0, 25.0, 12.0, 0.0)
     )
-    operating_limit_scale: float = 0.9
+    operating_limit_scale: float = 0.75
     zero_tolerance: float = 1.0e-9
     ik_boundary_iterations: int = 52
     max_batch_points: int = 25
@@ -217,6 +217,7 @@ class PostureCoordinator:
         """Return the scaled angular limit at an objective elevation."""
 
         cfg = self.config
+        elevation_knots = self.operating_elevation_knots
         if axis == PostureAxis.ROLL:
             limits = cfg.roll_limit_knots
         elif axis == PostureAxis.PITCH:
@@ -224,15 +225,15 @@ class PostureCoordinator:
         else:
             raise ValueError("angular limits only apply to roll and pitch")
 
-        if elevation <= cfg.elevation_knots[0]:
+        if elevation <= elevation_knots[0]:
             raw_limit = limits[0]
-        elif elevation >= cfg.elevation_knots[-1]:
+        elif elevation >= elevation_knots[-1]:
             raw_limit = limits[-1]
         else:
             raw_limit = limits[-1]
-            for index in range(len(cfg.elevation_knots) - 1):
-                lower_z = cfg.elevation_knots[index]
-                upper_z = cfg.elevation_knots[index + 1]
+            for index in range(len(elevation_knots) - 1):
+                lower_z = elevation_knots[index]
+                upper_z = elevation_knots[index + 1]
                 if lower_z <= elevation <= upper_z:
                     fraction = (elevation - lower_z) / (upper_z - lower_z)
                     raw_limit = limits[index] + fraction * (
@@ -248,6 +249,17 @@ class PostureCoordinator:
         return -self.model.config.home_z
 
     @property
+    def operating_elevation_knots(self) -> Tuple[float, ...]:
+        """Return elevation knots scaled around the stationary objective."""
+
+        stationary = self.stationary_elevation
+        scale = self.config.operating_limit_scale
+        return tuple(
+            stationary + scale * (elevation - stationary)
+            for elevation in self.config.elevation_knots
+        )
+
+    @property
     def current_elevation(self) -> float:
         return self.elevation_for_pose(self.current_pose)
 
@@ -260,10 +272,11 @@ class PostureCoordinator:
         cfg = self.config
         tolerance = cfg.zero_tolerance
         objective_elevation = self.elevation_for_pose(pose)
+        elevation_knots = self.operating_elevation_knots
         if not (
-            cfg.elevation_knots[0] - tolerance
+            elevation_knots[0] - tolerance
             <= objective_elevation
-            <= cfg.elevation_knots[-1] + tolerance
+            <= elevation_knots[-1] + tolerance
         ):
             return False
         if abs(pose.roll) > tolerance and abs(pose.pitch) > tolerance:
