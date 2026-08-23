@@ -133,6 +133,7 @@ class GoalReceiver:
         self.last_goal_id = None
         self.last_crc = None
         self.last_status = None
+        self.next_point_deadline = None
 
     @staticmethod
     def _flush_stdout():
@@ -198,17 +199,6 @@ class GoalReceiver:
                 matched = 1 if value == MAGIC[0] else 0
         return MAGIC
 
-    @staticmethod
-    def _is_finite(value):
-        return value == value and value not in (float("inf"), -float("inf"))
-
-    def _validate_payload_values(self, payload, point_count):
-        for point_index in range(point_count):
-            values = struct.unpack_from(POINT_FORMAT, payload, point_index * POINT_SIZE)
-            for value in values:
-                if not self._is_finite(value):
-                    raise ProtocolError("NONFINITE_JOINT")
-
     def _wait_until(self, deadline):
         while True:
             remaining = time.ticks_diff(deadline, time.ticks_us())
@@ -217,12 +207,19 @@ class GoalReceiver:
             time.sleep_us(remaining)
 
     def _play_payload(self, payload, point_count, sample_period_us):
-        start = time.ticks_us()
+        now = time.ticks_us()
+        deadline = self.next_point_deadline
+        if deadline is None or time.ticks_diff(deadline, now) <= 0:
+            # Start immediately for the first batch. If transfer or validation
+            # missed the carried deadline, apply the first point immediately
+            # and establish a fresh cadence from this arrival.
+            deadline = now
         for point_index in range(point_count):
-            deadline = time.ticks_add(start, (point_index + 1) * sample_period_us)
             self._wait_until(deadline)
             values = struct.unpack_from(POINT_FORMAT, payload, point_index * POINT_SIZE)
             self.apply_goal(values)
+            deadline = time.ticks_add(deadline, sample_period_us)
+        self.next_point_deadline = deadline
 
     def _read_frame(self):
         magic = self._read_magic()
@@ -235,7 +232,6 @@ class GoalReceiver:
             computed_crc = crc32(header_bytes + payload)
             if received_crc != computed_crc:
                 raise ProtocolError("BAD_CRC")
-            self._validate_payload_values(payload, header["point_count"])
         except ProtocolError as exc:
             raise ProtocolError(
                 exc.code,

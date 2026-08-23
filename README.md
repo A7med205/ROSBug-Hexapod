@@ -345,8 +345,9 @@ Hardware adapter arguments:
 
 Wait for the board's `READY 1` response before diagnosing an initial timeout.
 The firmware accepts one batch at a time, validates its version, IDs, shape,
-sample period, finite values, payload size, and CRC, and then applies points at
-absolute board-clock deadlines.
+sample period, payload size, and CRC. Playback carries the next point deadline
+across batches; a late frame applies its first point immediately and starts a
+fresh board-clock cadence.
 
 ### ROS 2 simulation and RViz
 
@@ -590,8 +591,9 @@ limit by the same factor.
 
 The header contains magic, protocol version, message type, header size,
 session ID, unique goal ID, joint count, point count, sample period, and payload
-length. The board rejects malformed, stale, non-finite, or CRC-invalid goals.
-Retries reuse the same session/goal ID and are idempotent.
+length. The board rejects malformed, stale, or CRC-invalid goals. Joint payload
+values are trusted after the CRC succeeds and are unpacked only during
+playback. Retries reuse the same session/goal ID and are idempotent.
 
 ### Servo 2040 channel order and calibration
 
