@@ -31,14 +31,14 @@ class PostureConfig:
     angular_acceleration: float = math.radians(40.0)
     # Raw objective body elevations above the stance-tip plane. The operating
     # scale contracts these knots around the stationary objective (-home_z).
-    elevation_knots: Tuple[float, ...] = (0.025, 0.050, 0.100, 0.130, 0.150)
+    elevation_knots: Tuple[float, ...] = (0.025, 0.050, 0.080, 0.098, 0.110)
     roll_limit_knots: Tuple[float, ...] = tuple(
         math.radians(value) for value in (0.0, 12.0, 20.0, 10.0, 0.0)
     )
     pitch_limit_knots: Tuple[float, ...] = tuple(
         math.radians(value) for value in (0.0, 12.0, 25.0, 12.0, 0.0)
     )
-    operating_limit_scale: float = 0.75
+    operating_limit_scale: float = 0.9
     zero_tolerance: float = 1.0e-9
     ik_boundary_iterations: int = 52
     max_batch_points: int = 25

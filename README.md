@@ -281,16 +281,33 @@ Run commands from the repository root unless a command changes directory.
 
 ### Hardware
 
-The hardware adapter runs on the robot's Raspberry Pi. SSH into the Pi before
-issuing the hardware setup, firmware-copy, or control commands in this section:
+The hardware adapter runs on the robot's Raspberry Pi. To deploy the required
+files from another machine, open a terminal at the root of its repository
+checkout, replace `<ip-address>` with the Pi's address, create the destination,
+and copy the runtime directories and requirements:
 
 ```bash
-ssh <user>@<raspberry-pi-host>
-cd ROSBug-Hexapod
+ssh pi@<ip-address> 'mkdir -p /home/pi/ROSBug-Hexapod'
+scp -r \
+  common \
+  robot_core \
+  gait_core \
+  posture_core \
+  hardware \
+  requirements.txt \
+  pi@<ip-address>:/home/pi/ROSBug-Hexapod/
 ```
 
-The following commands assume that the repository is present on the Pi and
-that the Servo 2040 is attached to it over USB.
+Then SSH into the Pi before issuing the hardware setup, firmware-copy, or
+control commands in this section:
+
+```bash
+ssh pi@<ip-address>
+cd /home/pi/ROSBug-Hexapod
+```
+
+The following commands assume that these files are present on the Pi and that
+the Servo 2040 is attached to it over USB.
 
 Install the host dependency and `mpremote` if it is not already available:
 
@@ -467,11 +484,11 @@ The controls are identical for hardware and simulation.
 Posture commands require a numeric prefix. `[` and `]`
 lower and raise elevation by the prefixed number of millimetres; pitch and roll
 numbers are relative degree changes from the confirmed pose. Every elevation
-change is clamped to the 31.25–125 mm scaled objective-height envelope. During an active
-posture command, the first `0` discards remaining points after the current
-25-point boundary and enters `POSTURE_HOLD`; a second `0` from that hold
-returns to the stationary objective elevation and zero tilt. `r` zeros the active
-tilt without changing elevation.
+change is clamped to the 27.5–104 mm scaled objective-height envelope. During
+an active posture command, the first `0` discards remaining points after the
+current 25-point boundary and enters `POSTURE_HOLD`; a second `0` from that
+hold returns to the stationary objective elevation and zero tilt. `r` zeros
+the active tilt without changing elevation.
 
 ## Hardcoded parameters
 
@@ -555,11 +572,11 @@ Posture trajectories use a 20 ms cubic smoothstep profile.
 | Pitch/roll maximum velocity | 10°/s |
 | Pitch/roll maximum acceleration | 40°/s² |
 | Maximum batch | 25 points / 0.5 s |
-| Operating elevation/angular-limit scale | 0.75 |
-| Raw objective elevation knots | 25, 50, 100, 130, 150 mm |
-| Minimum operating objective elevation | 31.25 mm |
+| Operating elevation/angular-limit scale | 0.9 |
+| Raw objective elevation knots | 25, 50, 80, 98, 110 mm |
+| Minimum operating objective elevation | 27.5 mm |
 | Stationary objective elevation `-home_z` | 50 mm |
-| Maximum operating objective elevation | 125 mm |
+| Maximum operating objective elevation | 104 mm |
 | IK boundary-search iterations | 52 |
 | Neutral tolerance | `1e-9` |
 
@@ -570,11 +587,11 @@ limit by the same factor.
 
 | Operating objective elevation | Raw roll | Applied roll | Raw pitch | Applied pitch |
 | ---: | ---: | ---: | ---: | ---: |
-| 31.25 mm | 0° | 0° | 0° | 0° |
-| 50 mm | 12° | 9° | 12° | 9° |
-| 87.5 mm | 20° | 15° | 25° | 18.75° |
-| 110 mm | 10° | 7.5° | 12° | 9° |
-| 125 mm | 0° | 0° | 0° | 0° |
+| 27.5 mm | 0° | 0° | 0° | 0° |
+| 50 mm | 12° | 10.8° | 12° | 10.8° |
+| 77 mm | 20° | 18° | 25° | 22.5° |
+| 93.2 mm | 10° | 9° | 12° | 10.8° |
+| 104 mm | 0° | 0° | 0° | 0° |
 
 ### Hardware protocol and playback
 
@@ -594,6 +611,30 @@ session ID, unique goal ID, joint count, point count, sample period, and payload
 length. The board rejects malformed, stale, or CRC-invalid goals. Joint payload
 values are trusted after the CRC succeeds and are unpacked only during
 playback. Retries reuse the same session/goal ID and are idempotent.
+
+#### Measured batch handoff timing
+
+A diagnostic build was tested on trajectory 7 using continuous 24-point
+batches at the 20 ms sample period. Goals 35–39 produced the following
+steady-state ranges; startup, user-idle, and the intentional stand-up hold were
+excluded:
+
+| Stage | Diagnostic range |
+| --- | ---: |
+| Pi completion processing before the next executor call | 1.2–3.0 ms |
+| Host batch encoding and CRC | 0.29–0.34 ms |
+| Host USB write and flush | 21.57–21.65 ms |
+| Board header receipt and validation | 1.45–1.46 ms |
+| Board payload receipt | 18.49–18.64 ms |
+| Board native CRC calculation | 0.70–0.73 ms |
+| Board garbage collection | 3.94–5.48 ms |
+| Board ACK formatting and flush | 0.78–0.80 ms |
+| First-point deadline wait after a late-frame reset | 0.42–0.51 ms |
+| First joint conversion and servo update | 10.86–11.07 ms |
+| **Raw carried-deadline miss per batch** | 40.53–42.51 ms |
+
+Host and board rows are views of some of the same USB transfer and therefore
+must not be added together as independent sequential stages.
 
 ### Servo 2040 channel order and calibration
 
