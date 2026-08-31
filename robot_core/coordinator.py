@@ -28,10 +28,15 @@ class HexapodCoordinator:
         self,
         gait_config: Optional[GaitConfig] = None,
         posture_config: Optional[PostureConfig] = None,
+        goal_id_allocator: Optional[GoalIdAllocator] = None,
     ) -> None:
-        goal_ids = GoalIdAllocator()
-        self.gait = LiteGaitCoordinator(gait_config, goal_ids)
-        self.posture = PostureCoordinator(self.gait.model, posture_config, goal_ids)
+        self.goal_id_allocator = goal_id_allocator or GoalIdAllocator()
+        self.gait = LiteGaitCoordinator(gait_config, self.goal_id_allocator)
+        self.posture = PostureCoordinator(
+            self.gait.model,
+            posture_config,
+            self.goal_id_allocator,
+        )
         self.mode = ControllerMode.AUTO
         self.requested_mode = ControllerMode.AUTO
         self._pending_owner: Optional[str] = None
